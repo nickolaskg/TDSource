@@ -1,0 +1,95 @@
+THE DOCUMENT SOURCE (TDS)
+Decision Addendum 01
+Date: August 26, 2026
+
+This addendum records decisions made after the initial TDS project-context
+document was prepared.
+
+CONFIRMED DECISIONS
+
+1. Webex space exclusion
+Webex spaces will not be categorically excluded from TDS capture.
+
+2. Rejected Q&A deletion
+When a rejected Q&A reaches its deletion date, all related context and
+attachments are permanently purged. No record or audit tombstone of that Q&A is
+retained after deletion.
+
+3. Published-document review dates
+Published documents do not need an optional or required review-by date.
+
+4. Attachment size
+The maximum size is 25 MB per individual attachment.
+
+5. Pinned-space controls
+Admins cannot turn off capture for an individual pinned Webex space. Pinned
+spaces remain capture-enabled for authorized Admins and Moderators. Basic User
+publication visibility and Admin/Moderator-only visibility remain separate
+controls.
+
+6. Internal teams
+TDS supports multiple internal teams within its single organization. Registered
+users belong to specific teams. An Admin manages membership from the Settings
+dashboard by searching registered users by email address or name and adding
+them to a team. A team member gains visibility into the permitted knowledge
+associated with all Webex spaces pinned to that team.
+
+The same Webex space can be pinned to multiple internal teams. Members of each
+team gain access according to that team's visibility settings. A user needs
+access through at least one of their teams to see the document.
+
+All document, search, transcript, and attachment queries must enforce team
+membership and the pinned-space visibility settings.
+
+7. Updating a captured thread
+After additional replies are added to a previously captured Webex thread, an
+Admin or Moderator can invoke:
+
+    @<bot-name> update
+
+This creates a new review using the additional responses. The existing approved
+document must not be silently overwritten while the update is awaiting review.
+Approval should result in a new version of the existing document.
+
+The update command retrieves and processes the complete current thread, not
+only the messages added since the previous capture. TDS should retain the prior
+source snapshot and determine changes for moderator presentation and version
+history.
+
+8. Permanent deletion
+TDS retains no records after a Q&A is deleted. Purging must include its database
+records, source transcript, attachments, generated content, search-index data,
+cached previews, and other related processing artifacts.
+
+9. Searching hidden transcripts
+Original transcript text remains searchable by Basic Users even when the
+transcript is hidden on the published document. A match may return the permitted
+document, but the result must show only its published summary and other visible
+fields. It must never show a hidden transcript excerpt, highlighted hidden text,
+autocomplete content, or hidden transcript data in a response payload.
+
+This choice can reveal that a searched term exists somewhere in the hidden
+source material, even though it does not reveal the text itself. This is an
+intentional privacy tradeoff and must be covered by security testing.
+
+Team and document visibility are still enforced before searching. Users cannot
+search documents belonging only to teams or audiences they cannot access.
+
+10. Document labels
+On approval, TDS automatically applies either Verified or Unresolved based on
+whether the reviewer confirms that the source supports a resolution. Outdated
+and Deprecated labels can be applied later by an Admin or Moderator while
+editing an approved document. Published documents have no automatic expiration
+or review-by date.
+
+The automatic Verified/Unresolved behavior applies equally when a Moderator or
+an Admin approves the document.
+
+REMAINING OPEN ITEMS
+
+1. A maximum of 25 MB per attachment is confirmed. A combined maximum size for
+all attachments on one Q&A has not been defined.
+
+2. Deleted material must leave no TDS record. Backup purge timing, if backups
+are used, still needs an operational policy so restored backups do not revive
+deleted content indefinitely.

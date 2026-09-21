@@ -1,0 +1,281 @@
+THE DOCUMENT SOURCE (TDS)
+Decision Addendum 02: User, Team, and Confirmation Management
+Date: August 26, 2026
+
+This addendum records the confirmed user-management, team-management, account,
+and confirmation-dialog requirements for the TDS MVP.
+
+======================================================================
+1. REGISTRATION AND FIRST SIGN-IN
+======================================================================
+
+- TDS uses Webex OAuth for authentication.
+- Registration is restricted to approved organization email domains.
+- The approved domain for the MVP is:
+
+      tdsynnex.com
+
+- The domain comparison must be case-insensitive and must verify the complete
+  domain after the final @ character. Subdomains and lookalike domains must not
+  be accepted unless explicitly configured later.
+- On a valid user's first successful sign-in, TDS automatically creates an
+  inactive Basic User record.
+- The new user receives no team document access until an Admin activates the
+  account and/or assigns the user to an appropriate team according to the final
+  onboarding flow.
+- Admins cannot invite users before their first sign-in.
+- TDS does not send user invitations for the MVP.
+- Users may therefore appear in User Management only after attempting their
+  first valid Webex OAuth sign-in.
+
+Recommendation: store approved domains in configuration rather than hard-code
+tdsynnex.com throughout the application, while presenting only that domain in
+the MVP settings.
+
+
+======================================================================
+2. TEAM-SPECIFIC ROLES
+======================================================================
+
+- Roles are team-specific rather than organization-wide.
+- A user may have different roles in different teams. For example, the same
+  person can be a Moderator in Team A and a Basic User in Team B.
+- An Admin can promote another user to Admin.
+- The final active Admin is protected from demotion, deactivation, and any other
+  action that would leave TDS without an active Admin.
+- An Admin may change their own role or deactivate their own account only when
+  the final-active-Admin protection remains satisfied.
+
+Required authorization rule:
+
+- TDS must evaluate the user's role in the team that owns or grants access to
+  the resource being accessed. A Moderator role in one team must not grant
+  moderation rights in another team where the user is a Basic User.
+
+Open design item:
+
+- Team-scoped content roles are confirmed, but system-wide administration still
+  needs a precise model. TDS requires authority to create/delete teams, manage
+  integrations, configure organization settings, and protect the final Admin.
+  Decide whether Admin is a global account capability while Basic/Moderator are
+  team roles, or whether a designated organization-level Owner exists above
+  team-specific Admin roles.
+
+
+======================================================================
+3. TEAM MEMBERSHIP MANAGEMENT
+======================================================================
+
+- Admins can search registered users by name or email address.
+- Admins can add users to teams.
+- Users can belong to multiple teams.
+- Admins can remove users from teams.
+- Removing a user from a team immediately revokes access obtained through that
+  membership, including documents, hidden transcript search, favorites,
+  transcripts, and attachments.
+- If another team independently grants the user access to the same document,
+  that independent access remains valid.
+- An active user may belong to no teams.
+- TDS does not assign a default team to new users.
+- Admins can add or remove multiple users in a bulk operation.
+- Admins can create, rename, archive, and delete teams.
+
+User experience for an active user with no team access:
+
+- Show a clear empty state explaining that the account currently has no team
+  access.
+- Provide a Request Team Access action.
+- The request interface may use a dropdown or searchable selector containing
+  known teams within the organization.
+- A submitted request must not grant access automatically; it remains pending
+  until approved by an authorized Admin.
+
+Open design items:
+
+- Decide whether every active user may see every team name or whether some team
+  names are hidden from the access-request selector.
+- Define which Admins receive and may approve a team-access request when Admin
+  authority is team-specific.
+- Define whether a user may enter an optional explanation with the request and
+  whether the user is notified when it is approved or denied.
+
+
+======================================================================
+4. TEAM ARCHIVE AND DELETION
+======================================================================
+
+- Admins can archive or delete teams.
+- When a team is deleted, documents associated with that team are placed in an
+  archive.
+- Archived documents retain historical tags/metadata identifying the team to
+  which they previously belonged.
+- Deleting a team must not erase this historical team attribution from its
+  archived documents.
+
+Important shared-space rule requiring confirmation:
+
+- The same Webex space can be pinned to multiple teams. If a document is also
+  actively available through another existing team, the recommended behavior is
+  to remove only the deleted team's relationship and keep the document active
+  for the other team. Archive the document only when the deleted team was its
+  final active team. This avoids one team's deletion disrupting another team.
+
+Recommendation:
+
+- Prefer archiving a team as the normal reversible action.
+- Reserve permanent team deletion for an already archived team.
+- Team deletion should remove memberships and pinned-space relationships only
+  after showing an impact summary.
+
+
+======================================================================
+5. ACCOUNT SUSPENSION, REACTIVATION, AND DELETION
+======================================================================
+
+- Suspending/deactivating a user immediately terminates all active TDS sessions
+  and revokes access.
+- Suspension does not remove the user from their teams.
+- Team removal is a separate Admin action.
+- An Admin does not need to enter a suspension reason.
+- An Admin can reactivate a suspended account later.
+- Reactivation restores the user's prior team memberships and team-specific
+  roles.
+- User accounts may be permanently deleted.
+- Deleting or suspending a user requires explicit confirmation.
+- The final active Admin cannot suspend or delete themselves when doing so would
+  leave TDS without an active Admin.
+
+Open design item:
+
+- Earlier requirements preserve historical user attribution after deactivation.
+  Permanent deletion now needs a defined history rule: either retain historical
+  actions under a non-identifying "Deleted User" identity, retain the user's
+  name/email in audit history, or purge their history. This must be settled
+  before implementing permanent account deletion.
+
+
+======================================================================
+6. USER MANAGEMENT INTERFACE
+======================================================================
+
+The Admin User Management area includes:
+
+- Search by name and email address
+- Filters for team, team-specific role, and account status
+- User list showing name, email, status, teams, roles by team, and last sign-in
+- Pending/inactive and unassigned-user views
+- User detail panel or page
+- Activate, suspend, reactivate, and permanently delete actions
+- Add and remove team membership
+- Assign and change a user's role independently for each team
+- Promote an eligible user to Admin under the final global-admin model
+- Bulk team-add and team-remove actions
+- Team-access request queue
+- Final-active-Admin protection and clear warnings
+- Confirmation dialogs for access-changing or destructive actions
+- Audit history identifying who changed account status, roles, and memberships
+
+Bulk-operation recommendation:
+
+- Show the exact affected users and team before confirmation.
+- Process large batches as a tracked operation and report partial failures.
+- Never allow a bulk action to bypass final-active-Admin protection.
+
+
+======================================================================
+7. CONFIRMATION DIALOG REQUIREMENTS
+======================================================================
+
+Confirmation dialogs are required before these Q&A actions:
+
+- Reject a Q&A draft
+- Archive a Q&A document
+- Permanently delete a Q&A document
+
+Confirmation dialogs are required before these user/team actions:
+
+- Suspend/deactivate a user
+- Permanently delete a user
+- Remove a user from a team
+- Demote an Admin or otherwise remove administrative authority
+- Delete or archive a team
+- Perform the equivalent bulk actions
+
+Every confirmation should:
+
+- Name the affected Q&A, user, users, or team.
+- State the immediate effect of the action.
+- State whether the action is reversible.
+- State what will be retained, archived, or permanently purged.
+- Warn about immediate access revocation where applicable.
+- Disable confirmation while the request is processing.
+- Report success or failure without allowing accidental duplicate submission.
+
+Additional rules by action:
+
+Reject Q&A
+- Explain that the draft moves to the staff-only Rejected area and is scheduled
+  for permanent purge after 30 days.
+- Display the scheduled deletion date.
+- A rejection reason remains optional.
+
+Archive Q&A
+- Explain that the document is removed from the active library but retained and
+  can be restored, subject to access policy.
+
+Delete Q&A
+- Explain that deletion permanently purges all related context, transcripts,
+  attachments, generated content, search data, and TDS records.
+- Make clear that TDS provides no recovery or audit tombstone after completion.
+- Recommendation: require a stronger confirmation such as typing DELETE or the
+  document title because this action is irreversible.
+
+Suspend User
+- Explain that all active sessions end immediately.
+- Explain that team memberships and roles are preserved for reactivation.
+
+Delete User
+- Explain that the account cannot be reactivated.
+- The dialog's historical-attribution wording depends on resolution of the open
+  deletion-history policy.
+- Recommendation: require a stronger typed confirmation for permanent deletion.
+
+Archive Team
+- Show user count, pinned-space count, and affected-document count.
+- Explain what access users will lose and that the team can be restored.
+
+Delete Team
+- Show user, pinned-space, and document impact before confirmation.
+- Explain which documents will be archived and which will remain active through
+  other teams.
+- Recommendation: require the team to be archived before it can be deleted.
+
+
+======================================================================
+8. AUDIT AND SESSION REQUIREMENTS
+======================================================================
+
+- Record activation, suspension, reactivation, account deletion, membership
+  changes, role changes, access-request decisions, team changes, and bulk
+  operations while the associated retention policy permits the record.
+- Suspending or deleting a user must invalidate current sessions and prevent
+  refresh tokens from creating new sessions.
+- Authorization changes must take effect immediately rather than waiting for
+  the user's next sign-in.
+- The UI must refresh or invalidate cached documents, search results, previews,
+  and downloads after access is revoked.
+
+
+======================================================================
+9. CURRENTLY UNRESOLVED USER-MANAGEMENT DECISIONS
+======================================================================
+
+1. Define the relationship between team-specific Admin roles and the global
+   authority needed to manage teams, users, integrations, and system settings.
+2. Define who can see, receive, approve, and deny team-access requests.
+3. Decide whether all team names are visible in the request-access selector.
+4. Decide how permanent user deletion affects historical attribution and audit
+   records.
+5. Confirm shared-document behavior when one of several associated teams is
+   deleted.
+

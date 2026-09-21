@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+import { adminSetupInvitationStatus, defaultReviewOrganizationWide, durableSessionDeadlines, hasReviewAccess, isOpaqueSessionToken, normalizeAvatarUrl, normalizeBotCommand, normalizedSourceMessages, organizationWideFromReview, validateGeminiDraft, verifyWebhookSignature, webhookEventId } from "./index.js";
+
+describe("review publication visibility", () => {
+  it("publishes organization-wide by default and honors an explicit private choice", () => {
+    expect(organizationWideFromReview(undefined)).toBe(true);
+    expect(organizationWideFromReview(true)).toBe(true);
+    expect(organizationWideFromReview(false)).toBe(false);
+  });
+
+  it("defaults never-published reviews to organization-wide despite legacy stored values", () => {
+    expect(defaultReviewOrganizationWide(false, false)).toBe(true);
+    expect(defaultReviewOrganizationWide(true, false)).toBe(true);
+  });
+
+  it("preserves the visibility of an already-published document during an update", () => {
+    expect(defaultReviewOrganizationWide(false, true)).toBe(false);
+    expect(defaultReviewOrganizationWide(true, true)).toBe(true);
+  });
+});
+
+describe("durable user sessions", () => {
+  it("recognizes only the fixed-length opaque browser token format", () => {
+    expect(isOpaqueSessionToken("a".repeat(64))).toBe(true);
+    expect(isOpaqueSessionToken("a".repeat(63))).toBe(false);
+    expect(isOpaqueSessionToken(`${"a".repeat(63)}!`)).toBe(false);
+  });
+
+  it("uses a seven-day idle window capped by a thirty-day absolute window", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const deadlines = durableSessionDeadlines(0, 90 * 24 * 60 * 60);
+    expect(deadlines.idleExpiresAt).toBe(7 * day);
+    expect(deadlines.absoluteExpiresAt).toBe(30 * day);
+    expect(deadlines.refreshExpiresAt).toBe(90 * day);
+  });
+
+  it("never outlives a shorter refresh credential", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const deadlines = durableSessionDeadlines(0, 3 * 24 * 60 * 60);
+    expect(deadlines.idleExpiresAt).toBe(3 * day);
+    expect(deadlines.absoluteExpiresAt).toBe(3 * day);
+  });
+});
+
+describe("Team Admin setup invitations", () => {
+  it("reports terminal invitation states before transient states", () => {
+    const future = "2026-09-08T00:00:00Z"; const past = "2026-08-31T00:00:00Z"; const now = Date.parse("2026-09-01T00:00:00Z");
+    expect(adminSetupInvitationStatus({ expires_at: future, started_at: null, redeemed_at: null, revoked_at: null }, now)).toBe("pending");
+    expect(adminSetupInvitationStatus({ expires_at: future, started_at: future, redeemed_at: null, revoked_at: null }, now)).toBe("setup_started");
+    expect(adminSetupInvitationStatus({ expires_at: past, started_at: null, redeemed_at: null, revoked_at: null }, now)).toBe("expired");
+    expect(adminSetupInvitationStatus({ expires_at: past, started_at: null, redeemed_at: future, revoked_at: null }, now)).toBe("completed");
+  });
+});
+
+describe("Webex profile pictures", () => {
+  it("accepts only valid HTTPS avatar URLs", () => {
+    expect(normalizeAvatarUrl("https://avatar.example.test/person.png")).toBe("https://avatar.example.test/person.png");
+    expect(normalizeAvatarUrl("http://avatar.example.test/person.png")).toBeUndefined();
+    expect(normalizeAvatarUrl("not a URL")).toBeUndefined();
+  });
+});
+
+describe("review API role boundary", () => {
+  it("denies basic-only users and allows staff", () => {
+    expect(hasReviewAccess([{ role: "basic" }])).toBe(false);
+    expect(hasReviewAccess([{ role: "moderator" }])).toBe(true);
+    expect(hasReviewAccess([{ role: "admin" }])).toBe(true);
+  });
+});
+
+describe("Webex command normalization", () => {
+  it("accepts exact commands after removing provider mention markup", () => {
+    expect(normalizeBotCommand({ markdown: "<@personEmail:bot@example.com|TDS> document" }, "TDS")).toBe("document");
+    expect(normalizeBotCommand({ text: "TDS update" }, "TDS")).toBe("update");
+  });
+
+  it("rejects commands embedded in ordinary prose", () => {
+    expect(normalizeBotCommand({ text: "Please ask TDS to document this" }, "TDS")).toBeNull();
+  });
+});
+
+describe("Webex webhook signatures", () => {
+  it("accepts only the matching HMAC-SHA1 signature", async () => {
+    const body = JSON.stringify({ id: "event-1" });
+    const secret = "test-secret";
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+    const bytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
+    const signature = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    await expect(verifyWebhookSignature(body, signature, secret)).resolves.toBe(true);
+    await expect(verifyWebhookSignature(`${body}x`, signature, secret)).resolves.toBe(false);
+  });
+});
+
+describe("Webex webhook idempotency", () => {
+  it("uses each created message id rather than the repeating webhook id", () => {
+    const first = { id: "same-webhook", data: { id: "command-1" } };
+    const second = { id: "same-webhook", data: { id: "command-2" } };
+    expect(webhookEventId(first)).toBe("command-1");
+    expect(webhookEventId(second)).toBe("command-2");
+  });
+});
+
+describe("Gemini evidence validation", () => {
+  const draft = { title: "Title", problem: "Problem", summary: "Summary", steps: ["Step"], warnings: [], evidence: { problem: [1], summary: [1], steps: [[2]], warnings: [] } };
+
+  it("accepts evidence that refers to source messages", () => {
+    expect(validateGeminiDraft(draft, 2).title).toBe("Title");
+  });
+
+  it("rejects evidence outside the immutable snapshot", () => {
+    expect(() => validateGeminiDraft(draft, 1)).toThrow(/invalid message/);
+  });
+});
+
+describe("source message normalization", () => {
+  it("excludes bot acknowledgements and exact capture commands", () => {
+    const root = { id: "root", roomId: "room", personId: "user-a", text: "How do I reset the test widget?", created: "2026-08-28T10:00:00Z" };
+    const replies = [
+      { id: "answer", roomId: "room", parentId: "root", personId: "user-b", text: "Use the synthetic reset control.", created: "2026-08-28T10:01:00Z" },
+      { id: "command", roomId: "room", parentId: "root", personId: "user-a", text: "@TDS document", created: "2026-08-28T10:02:00Z" },
+      { id: "ack", roomId: "room", parentId: "root", personId: "bot", text: "Captured.", created: "2026-08-28T10:03:00Z" },
+    ];
+    expect(normalizedSourceMessages(root, replies, "room", "TDS", "bot").map(({ id }) => id)).toEqual(["root", "answer"]);
+  });
+});

@@ -1,0 +1,1001 @@
+THE DOCUMENT SOURCE (TDS)
+Product Context, Requirements, and MVP Decisions
+Prepared from the initial product discussion and the founder's discovery responses
+Date: August 26, 2026
+
+======================================================================
+1. DOCUMENT PURPOSE
+======================================================================
+
+This file is the consolidated source of context for planning and building The
+Document Source (TDS). It captures the product vision, agreed requirements,
+workflows, permissions, information model, MVP scope, future ideas, design
+principles, recommendations, and unresolved questions discussed to date.
+
+Statements labeled "Confirmed" reflect decisions already made. Statements
+labeled "Recommendation" are proposed implementation or product choices that
+still need final approval. Statements labeled "Open question" require a future
+decision.
+
+
+======================================================================
+2. PRODUCT SUMMARY
+======================================================================
+
+The Document Source, abbreviated TDS, is a private, browser-based knowledge
+capture and Q&A documentation application. It converts useful problem-solving
+conversations from workplace chat into searchable, moderated Q&A documents.
+
+For the MVP, TDS will integrate with Webex. An authorized admin or moderator
+will invoke a bot inside a Webex group-space thread using this command:
+
+    @<bot-name> document
+
+TDS will capture the thread, including the linked replies and supported
+attachments, preserve an immutable copy of the original transcript, redact
+specified sensitive identifiers before any text is sent to an LLM, and ask the
+LLM to reorganize the conversation into a useful problem-to-solution document.
+The resulting draft will appear in a review queue in the TDS web app. An admin
+or moderator can review and edit it, manage its categories and tags, control
+the visibility of the original transcript, remove attachments, and approve,
+reject, archive, or otherwise manage it.
+
+Approved documents become part of a private knowledge library. Basic users can
+search and browse published documents, filter the library, favorite documents,
+preview or download attachments, and submit change requests for material that
+is incorrect or outdated.
+
+TDS is intended to be loosely coupled and modular. Webex is the first chat
+provider, but the core application must not depend directly on Webex-specific
+data structures. Future chat providers, LLMs, databases, storage systems, and
+search engines should be replaceable through well-defined interfaces.
+
+
+======================================================================
+3. PRODUCT GOALS
+======================================================================
+
+Primary goals:
+
+- Capture valuable organizational knowledge at the moment a chat participant
+  recognizes that a discussion should be documented.
+- Turn an informal chat thread into a structured, understandable Q&A document.
+- Keep a human moderator in control of everything that becomes published.
+- Prevent the LLM from inventing answers or adding unsupported information.
+- Retain the original source material for auditability and moderator review.
+- Protect organization data through authentication, authorization, redaction,
+  access scopes, and private storage.
+- Make published knowledge easy to find through browsing, keyword search, and
+  filters.
+- Support desktop-first use while remaining fully functional on mobile.
+- Establish clean integration boundaries so TDS can expand beyond Webex.
+
+Non-goals for the MVP:
+
+- Replacing a full document-management system.
+- Allowing unmoderated AI content to publish automatically.
+- Supporting multiple organizations in one deployment.
+- Supporting multiple chat providers at launch.
+- Synthesizing answers across the document library at launch.
+
+
+======================================================================
+4. GUIDING ARCHITECTURE
+======================================================================
+
+Conceptual processing flow:
+
+    Chat provider
+        -> conversation capture
+        -> immutable source snapshot and attachment intake
+        -> sensitive-data redaction
+        -> LLM transformation
+        -> moderation draft
+        -> approval and publication
+        -> search and knowledge library
+
+The application should be divided into modules with explicit contracts:
+
+1. Chat Provider Adapter
+   Receives provider events, validates bot commands, identifies the source
+   space and thread, retrieves messages and attachments, and translates them
+   into provider-neutral TDS objects. The first adapter will support Webex.
+
+2. Identity and Access Module
+   Handles Webex OAuth sign-in, TDS user records, account status, application
+   roles, organization membership, and access scopes. Webex identity proves
+   who the user is; TDS authorization determines what the user can do.
+
+3. Capture and Ingestion Module
+   Validates capture eligibility, creates a capture record, downloads supported
+   attachments into controlled storage, stores the immutable transcript, and
+   queues the content for processing.
+
+4. Redaction Module
+   Detects configured sensitive identifiers and replaces them in the LLM-bound
+   copy with a placeholder such as XXXXXXX. It must never overwrite or mutate
+   the original stored transcript.
+
+5. LLM Provider Adapter
+   Accepts sanitized, provider-neutral conversation text and returns a
+   structured draft. The interface must allow the underlying LLM provider or
+   model to be changed without rewriting capture, moderation, or publication.
+
+6. Moderation and Workflow Module
+   Manages document states, review assignments or actions, moderator edits,
+   approval, rejection, change requests, archiving, and history.
+
+7. Knowledge Library and Search Module
+   Serves approved documents, full-text search, highlighted matches, filters,
+   favorites, categories, tags, and access-control enforcement.
+
+8. Attachment Module
+   Controls file validation, storage, metadata, access, preview, download, and
+   moderator removal.
+
+9. Audit and Operations Module
+   Records important actions, exposes processing failures and retries, and
+   supports administrative troubleshooting.
+
+Recommendation: implement long-running work such as conversation retrieval,
+attachment copying, redaction, and LLM processing as background jobs. The bot
+can acknowledge the request immediately, while processing continues reliably
+and can be retried without duplicating the document.
+
+
+======================================================================
+5. DEPLOYMENT AND TENANCY
+======================================================================
+
+Confirmed:
+
+- TDS will support one organization per deployment.
+- The MVP does not require multi-tenant data separation within a single
+  deployment.
+- The initial data platform may be Supabase to obtain hosted PostgreSQL,
+  authentication support, and object storage at low or no initial cost.
+
+Recommendation:
+
+- Even with one organization per deployment, include an organization identifier
+  in core records where practical. This avoids needlessly difficult migrations
+  if multi-tenancy is ever introduced, without requiring a multi-tenant UI now.
+- Keep database access behind application services rather than allowing UI
+  components to encode business rules directly.
+- Evaluate Supabase plan limits, backup options, regional requirements, file
+  storage limits, log retention, and security controls before production use.
+  A free tier is appropriate for prototyping, but potentially sensitive
+  organization data may require a paid or differently governed environment.
+
+
+======================================================================
+6. AUTHENTICATION, USERS, AND ROLES
+======================================================================
+
+Confirmed authentication model:
+
+- Every user must sign in; there is no public or anonymous library access.
+- Webex OAuth is the preferred easy sign-in method for the MVP.
+- The first authenticated user will not automatically become an admin.
+- Initial administrator access will be configured manually.
+- Admins can deactivate user accounts while preserving their historical
+  actions and attribution.
+
+Confirmed roles:
+
+Basic User
+- Search approved documents.
+- Browse and view approved documents within their permitted scope.
+- View an original transcript only when that document was explicitly published
+  with transcript visibility enabled.
+- Filter search and library results.
+- Preview and download permitted attachments.
+- Favorite or unfavorite documents.
+- Submit a change/update request with an explanatory comment.
+- Cannot approve, edit, reject, archive, delete, or manage Q&A documents.
+- Cannot manage users, roles, system configuration, categories, or tags.
+
+Moderator
+- Has all Basic User capabilities.
+- May invoke the Webex bot capture command.
+- Can access the moderation dashboard and review queue.
+- Can view immutable source transcripts and captured attachments.
+- Can edit all derived document fields, including the suggested title and
+  question, but cannot edit the original transcript.
+- Can approve and publish their own captured content; a second reviewer is not
+  required.
+- Can reject, restore eligible rejected drafts, archive, and delete as allowed
+  by the final retention policy.
+- Can edit already published documents directly without requiring another
+  approval.
+- Can manage document categories and controlled tags.
+- Can review AI-generated tags before approval.
+- Can view audit history.
+- Cannot add, deactivate, or delete user accounts.
+- Cannot promote or demote users.
+- Cannot configure Webex, LLM, or organization-wide system settings.
+
+Admin
+- Has all Moderator capabilities.
+- Can manage user accounts and account status.
+- Can promote Basic Users to Moderator and demote Moderators.
+- Can manage pinned Webex spaces and their classifications.
+- Can configure Webex, LLM, storage, and other system-level settings.
+- Has full access to admin/moderator-only documents.
+
+Recommendation:
+
+- Store roles in TDS rather than treating Webex roles as application roles.
+- Use deny-by-default authorization on both the server and database layers.
+- Preserve a user's identity and audit history after deactivation instead of
+  physically deleting referenced user records.
+
+
+======================================================================
+7. INITIAL ADMIN SETUP AND PINNED WEBEX SPACES
+======================================================================
+
+Confirmed:
+
+- The initial admin experience must include a setup process.
+- During setup, an admin selects Webex spaces to pin to their TDS team.
+- Pinned spaces define which chat-derived knowledge is made available to TDS
+  users and how it is organized.
+- Admins can modify pinned spaces later in Settings.
+- Webex spaces map automatically to TDS collections/sections.
+- A space may need different capture or approval behavior, so the admin must be
+  able to classify each pinned space.
+- The published library is divided into sections associated with source Webex
+  spaces. Spaces can be included in admin-defined TDS groupings through the
+  pinned-space configuration.
+
+The exact pinned-space policy needs one more design pass. A useful model is:
+
+- Capture enabled: authorized admins/moderators may create TDS drafts from this
+  Webex space.
+- Browse enabled: approved documents from the space can appear to Basic Users.
+- Restricted: approved documents remain visible only to Admins and Moderators.
+- Ignored/disabled: the space is known to TDS but capture requests are denied.
+
+Recommendation: represent capture permission and publication visibility as
+separate settings. A single "approved/denied" classification can become
+ambiguous. For example, a team may allow capture from a sensitive support room
+while requiring every resulting document to remain staff-only.
+
+Open question:
+
+- Can the same Webex space be pinned into more than one TDS grouping with
+  different moderators or approval behavior? The current description implies
+  that spaces can participate in different admin spaces, but the exact meaning
+  of an "admin space" and ownership of its queue still needs definition.
+
+
+======================================================================
+8. WEBEX CAPTURE WORKFLOW
+======================================================================
+
+Confirmed invocation rules:
+
+- Webex is the only chat provider required for the MVP.
+- The bot must already be added to the Webex group space.
+- Only group spaces are supported; direct one-to-one chats are excluded.
+- Only an active TDS Admin or Moderator may invoke capture.
+- The exact command format is:
+
+      @<bot-name> document
+
+- Additional title, category, or note parameters will not be supported in the
+  command for the MVP. Those fields are completed during web-app review.
+- TDS captures only the thread containing the bot mention.
+- It captures messages linked as replies to that thread's root message.
+- It does not capture an arbitrary timestamp range.
+- It does not allow manual selection of a custom subset of messages.
+- One captured discussion produces one Q&A document, not several.
+- The resulting document may have multiple tags and categories.
+
+Expected flow:
+
+1. An Admin or Moderator recognizes a useful Q&A thread.
+2. The authorized user posts @<bot-name> document in that thread.
+3. TDS validates the sender, account status, group space, pinned-space policy,
+   command, and whether the thread was already captured.
+4. The bot promptly replies that the thread was captured and is awaiting
+   review. The response should contain a tracking identifier and, when
+   practical, a link into TDS.
+5. TDS retrieves the root message and linked replies.
+6. TDS records source space, participants, timestamps, requester, provider IDs,
+   transcript, and attachment references.
+7. Supported attachments are copied into TDS-controlled private storage.
+8. A sanitized copy of the text is produced for the LLM.
+9. The LLM produces a structured draft constrained to source facts.
+10. The draft enters the moderation review queue.
+11. If processing fails, the capture remains visible to authorized staff with
+    an error state and retry option.
+
+Recommendation:
+
+- Make capture idempotent. Repeated Webex events or repeated commands for the
+  same provider thread should not silently create duplicate drafts. If a
+  moderator intentionally needs a new capture, the UI should make that choice
+  explicit.
+- Provide concise bot responses for unauthorized user, unsupported direct chat,
+  disabled space, already captured thread, successful queueing, and hard
+  failure.
+
+
+======================================================================
+9. DOCUMENT CONTENT MODEL
+======================================================================
+
+Each Q&A document should contain, as applicable:
+
+- Cleaned title/question
+- Problem description
+- Brief resolution summary
+- Detailed step-by-step solution when the conversation supports one
+- Warnings or prerequisites
+- Resolution status, including Unresolved when no answer was reached
+- One or more fixed, controlled categories
+- Multiple controlled tags
+- AI-suggested tags awaiting moderator confirmation
+- Source Webex space/collection
+- Source participants
+- Immutable original message transcript
+- Source timestamps
+- Capture requester
+- Supported copied attachments and attachment metadata
+- Moderator notes
+- Transcript-publication visibility setting
+- Audience/access scope
+- Approval, rejection, archive, and revision history
+- Last verified date
+- Created, updated, approved, archived, and other relevant timestamps
+- Creator, editor, reviewer, and approver attribution
+
+Confirmed editing rules:
+
+- A Moderator or Admin can edit every derived or curated content field.
+- The original captured transcript cannot be edited.
+- Moderators may change the AI-suggested title/question.
+- A checkbox in the review experience controls whether the original transcript
+  is visible to Basic Users on the published document.
+- The checkbox defaults to unchecked, so transcripts are private by default.
+- Admins and Moderators retain access to the original transcript for review and
+  audit purposes, subject to the eventual retention policy.
+- A Moderator or Admin may remove a sensitive attachment without removing the
+  rest of the Q&A.
+- A Q&A without a known solution can be approved and published with an
+  Unresolved status, then updated if a solution is found later.
+- Approved documents edited by an Admin or Moderator do not require another
+  approval cycle.
+
+
+======================================================================
+10. LLM TRANSFORMATION AND ANTI-HALLUCINATION RULES
+======================================================================
+
+Confirmed output behavior:
+
+- The LLM should identify the actual question or problem.
+- It should produce a brief summary.
+- It should produce detailed solution steps when the thread contains enough
+  information to support them.
+- It should identify warnings and prerequisites when present.
+- It should propose appropriate tags.
+- It must reorganize and summarize only what is present in the source thread.
+- It must not add outside knowledge, assumptions, inferred commands, invented
+  steps, or unsupported facts.
+- Every factual statement in the draft must be traceable to one or more
+  original messages.
+- If the thread does not establish a solution, the output must say so and mark
+  the draft as Unresolved instead of manufacturing an answer.
+
+Recommendation:
+
+- Require the LLM adapter to return structured data rather than free-form text.
+  Each generated section or factual item should include source-message IDs as
+  evidence references. These references can power moderator-side traceability
+  even when citations are not shown in the published document.
+- Validate the returned schema and reject or retry malformed output.
+- Display AI content as a draft, never as approved content.
+- Record the model/provider identifier, prompt-template version, processing
+  timestamp, and redaction version for reproducibility and troubleshooting.
+
+
+======================================================================
+11. REDACTION AND SENSITIVE INFORMATION
+======================================================================
+
+Confirmed:
+
+- The original transcript remains intact in private TDS storage for authorized
+  moderator/admin review.
+- A separate sanitized copy is created before text is sent to the LLM.
+- The sanitized copy should replace detected values with a placeholder such as
+  XXXXXXX.
+- The following identifiers must be targeted for redaction before LLM use:
+  quote numbers, serial numbers, contract numbers, subscription IDs, purchase
+  order (PO) numbers, and sales order (SO) numbers.
+- Moderators decide during review whether sensitive details are appropriate in
+  the final published Q&A.
+- TDS does not need to warn users at the moment of each Webex capture that text
+  will be sent to an LLM. This behavior will be explained in the product's FAQ
+  and usage documentation.
+
+Important recommendation:
+
+- Use typed placeholders where possible, such as [QUOTE_NUMBER_1] or
+  [SUBSCRIPTION_ID_1], rather than making every value XXXXXXX. Typed placeholders
+  preserve meaning and reduce ambiguity while keeping the actual value out of
+  the LLM request.
+- Redaction should combine deterministic organization-specific patterns with
+  configurable rules. Pattern detection will otherwise produce both misses and
+  false positives.
+- Consider expanding the policy before production to names, email addresses,
+  credentials, API keys, tokens, customer data, IP addresses, and other secrets.
+  These were discussed but not yet approved as mandatory redaction targets.
+- A visual warning should tell moderators that automated redaction is not a
+  guarantee and that they are responsible for checking final visibility.
+
+
+======================================================================
+12. DOCUMENT LIFECYCLE AND MODERATION
+======================================================================
+
+Recommended state model based on the confirmed behavior:
+
+- Captured: provider content has been accepted.
+- Processing: transcript, files, redaction, or LLM processing is underway.
+- Processing Failed: authorized staff can inspect and retry the failure.
+- Awaiting Review: the generated draft is ready for moderation.
+- Change Requested: a Basic User has reported a published document for review.
+- Published: approved and visible to its permitted audience.
+- Unresolved: a published or reviewable document whose source has no confirmed
+  solution. This may be a resolution status rather than an exclusive workflow
+  state.
+- Rejected: not published; staff may reconsider it during a 30-day window.
+- Archived: retained but removed from the normal active library.
+- Deprecated: published knowledge that should no longer be followed, retained
+  for reference when policy permits.
+- Deleted: removed according to authorization, audit, and retention policy.
+
+Confirmed moderation rules:
+
+- The main Admin/Moderator landing page is a dashboard.
+- Its primary call to action is a queue of Q&A cards needing review.
+- A reviewer can open a card into an editing experience. The original concept
+  proposed a modal; the MVP may use a modal or full page depending on content
+  length and mobile usability.
+- Only one reviewer is required to approve a document.
+- A Moderator may approve a document they captured themselves.
+- AI-generated tags require moderator approval.
+- Reject, Request Changes, Archive, and Delete are distinct actions.
+- Rejection does not immediately destroy the draft.
+- Rejected drafts are visible only to Admins and Moderators.
+- Rejected drafts are automatically deleted after 30 days.
+- A rejection reason is optional.
+- If a draft remains unapproved for 30 days, it moves to the rejected section.
+- Admins and Moderators may reconsider and approve a rejected draft during the
+  30-day rejected period.
+- Published documents can be edited directly by a Moderator or Admin without
+  new approval.
+
+Recommendation:
+
+- Treat the two 30-day periods distinctly in implementation:
+  1. Awaiting Review for 30 days -> automatically transition to Rejected.
+  2. Rejected for 30 additional days -> automatically delete or purge according
+     to the final retention policy.
+- Warn staff before automatic transition or deletion and show the scheduled
+  date on the record.
+- Maintain version history for direct edits to published documents, even though
+  a new approval is not required.
+
+
+======================================================================
+13. BASIC-USER CHANGE REQUEST FLOW
+======================================================================
+
+Confirmed:
+
+- Every viewable Q&A document includes an option to request a change or report
+  that the content needs an update.
+- The Basic User must be able to enter a comment describing the requested
+  change.
+- Submitting the request returns the document to the Q&A review list on the
+  Admin/Moderator dashboard.
+- Only an Admin or Moderator can edit the document itself.
+
+Recommendation:
+
+- Keep the currently published version available while a change request is
+  under review unless a Moderator explicitly marks it unsafe or deprecated.
+- Store change requests separately from the document so multiple reports do not
+  overwrite one another.
+- Give moderators actions to resolve, dismiss, or merge reports and retain an
+  audit record of the outcome.
+
+
+======================================================================
+14. CATEGORIES, TAGS, COLLECTIONS, AND STATUS
+======================================================================
+
+Confirmed:
+
+- Categories are fixed and managed by authorized staff, not arbitrary free-form
+  labels created by Basic Users.
+- Moderators and Admins can manage categories.
+- A document can belong to multiple categories.
+- A document can have multiple controlled tags.
+- AI may suggest tags, but a Moderator must approve them.
+- Webex spaces map automatically to TDS collections/sections.
+- Users can mark documents as favorites.
+- TDS should support labels such as Verified, Outdated, Deprecated, and
+  Unresolved.
+- Documents do not require individual owners or subject-matter experts.
+
+Recommendation:
+
+- Keep workflow state, resolution status, verification status, visibility, and
+  category separate. Combining all of these into one "status" field will create
+  contradictory or impossible values.
+- Define whether categories are flat or hierarchical before the category UI is
+  built. "Fixed" is confirmed; hierarchy depth is not.
+- Define who can set Verified and how Last Verified Date is refreshed.
+
+
+======================================================================
+15. SEARCH AND LIBRARY EXPERIENCE
+======================================================================
+
+Confirmed MVP behavior:
+
+- Basic Users, Moderators, and Admins can search the published knowledge they
+  are authorized to view.
+- MVP search will use keyword/full-text search rather than natural-language
+  semantic answering.
+- Search covers published Q&A content and original transcripts when the caller
+  has permission to access those transcripts.
+- Results show highlighted matching passages.
+- Results can be filtered by category, source space, author, date, and status.
+- Attachment type is not required as a filter.
+- The All Documents section lists the permitted Q&A library.
+- The design must support hundreds or thousands of documents through server-side
+  pagination or cursor-based loading rather than loading everything at once.
+- Search-activity analytics, including unanswered-search tracking, are not
+  required.
+
+Knowledge Chat:
+
+- Knowledge Chat answers questions from published, accessible, non-deprecated
+  documents and cites the source TDS documents.
+- The first implementation uses ranked retrieval over published version fields
+  and visible source messages. Vector chunk storage is ready for later semantic
+  embedding ingestion.
+
+Important access rule:
+
+- A search index must never expose restricted document or transcript text
+  through results, snippets, counts, autocomplete, or highlighted matches. All
+  search operations must apply the caller's access permissions.
+
+
+======================================================================
+16. ATTACHMENTS
+======================================================================
+
+Confirmed supported MVP types:
+
+- Common images, including PNG, JPG, and JPEG. Additional safe image formats can
+  be enumerated during implementation.
+- Microsoft Word documents.
+- Microsoft Excel workbooks.
+- PDF documents.
+
+Confirmed behavior:
+
+- Attachments are copied from Webex into TDS-controlled storage rather than
+  relying on long-lived Webex links.
+- Stored attachments are private and served only after authorization.
+- Regular users can preview supported formats and download files they are
+  permitted to access.
+- Moderators can remove a sensitive attachment while retaining the Q&A.
+- OCR of screenshots and images is not required for the MVP.
+- Attachment-type filtering is not required for search.
+
+Attachment-size recommendation (not yet confirmed):
+
+- Set a 25 MB maximum per individual attachment for the MVP.
+- Set a 100 MB maximum combined attachment size per captured Q&A.
+- Make both limits configurable so they can be adjusted for storage cost and
+  actual Webex usage.
+
+Reasoning: 25 MB generally accommodates screenshots and ordinary office files
+while limiting ingestion latency, malware exposure, storage use, and oversized
+downloads. If the organization routinely exchanges larger diagnostic bundles,
+the limit should be revisited based on real examples rather than raised by
+default.
+
+Additional security recommendations:
+
+- Validate file signatures in addition to filename extensions.
+- Generate safe server-side filenames while preserving the display name.
+- Block executable and macro-enabled formats unless specifically approved.
+- Add malware scanning before making an attachment available to users.
+- Store checksum, MIME type, original name, size, source message, uploader, and
+  storage key.
+- Use short-lived authorized download links rather than public file URLs.
+- Decide whether removing an attachment means immediate purge or restricted
+  retention in the audit record.
+
+
+======================================================================
+17. USER INTERFACE AND RESPONSIVE DESIGN
+======================================================================
+
+Confirmed:
+
+- TDS is a browser-based web application.
+- It will be desktop-first but fully responsive and mobile friendly.
+- The front end should be lightweight and may use Vite as its build tooling.
+
+Clarification: Vite is a build tool rather than a complete UI framework. A
+framework such as React, Vue, Svelte, or another suitable option still needs to
+be selected. A practical default is Vite plus React and TypeScript, but this is
+not yet an approved decision.
+
+Suggested primary screens:
+
+1. Sign In
+   Webex OAuth sign-in, access errors, and deactivated-account messaging.
+
+2. Initial Admin Setup
+   Organization configuration, Webex connection status, pinned-space selection,
+   space classification, and initial category configuration.
+
+3. Admin/Moderator Dashboard
+   Review-queue cards, counts by state, failed processing items, approaching
+   30-day deadlines, change requests, rejected items, and quick filters.
+
+4. Review Editor
+   Side-by-side or clearly separated source transcript and editable draft;
+   traceability links; title, question, summary, steps, warnings, categories,
+   tags, status, visibility, attachments, moderator notes, transcript-visibility
+   checkbox, validation, and moderation actions.
+
+5. All Documents / Library
+   Search, filter controls, collection/space sections, document cards or rows,
+   favorites, status indicators, sorting, and pagination.
+
+6. Document Detail
+   Published content, metadata, permitted attachments, optional transcript,
+   favorite action, and change-request action.
+
+7. Favorites
+   The current user's saved documents.
+
+8. Rejected and Archived Views
+   Restricted staff views with age, scheduled deletion, restore/reconsider, and
+   audit details.
+
+9. User Management
+   Admin-only user status and role management.
+
+10. Categories and Tags
+    Moderator/Admin management of controlled vocabulary.
+
+11. Settings
+    Admin-only pinned-space rules, Webex integration, LLM configuration,
+    retention settings, attachment limits, and other system settings.
+
+12. FAQ / About TDS
+    Explains capture behavior, use of LLM processing, redaction, roles,
+    moderation, privacy expectations, and feature usage.
+
+Mobile recommendation:
+
+- Use a full-screen review route on small screens rather than placing a long
+  transcript and editor in a conventional dialog. Desktop may use a large modal
+  or split-pane page, but the implementation should preserve deep linking and
+  unsaved-edit protection.
+
+
+======================================================================
+18. AUDITABILITY, HISTORY, AND OPERATIONS
+======================================================================
+
+Confirmed:
+
+- Admins and Moderators can view audit history.
+- The original transcript remains immutable.
+- The application exposes failed captures or processing jobs and supports retry.
+- User accounts may be deactivated without losing historical attribution.
+
+Recommended audit events:
+
+- User sign-in and relevant access failures
+- Role and account-status changes
+- Pinned-space and visibility-policy changes
+- Capture command acceptance or rejection
+- Source retrieval and attachment intake completion/failure
+- Redaction and LLM processing events
+- Moderator edits and document versions
+- Approval, rejection, reconsideration, archive, deprecation, and deletion
+- Transcript-visibility changes
+- Attachment removal and download where policy requires it
+- Change-request creation and resolution
+- Automatic 30-day transitions and purges
+- Manual retry actions and outcomes
+
+Recommendation: audit records should be append-only to ordinary users and
+should identify actor, action, target, timestamp, and relevant before/after
+metadata without copying sensitive content unnecessarily.
+
+
+======================================================================
+19. RETENTION AND DELETION
+======================================================================
+
+"Retention requirements" means the rules specifying how long data is kept,
+when it is archived or deleted, whether deletion is recoverable, and whether
+legal, security, operational, or business policy requires a record to remain.
+This applies separately to published documents, rejected drafts, original
+transcripts, attachments, versions, audit logs, and deactivated users.
+
+Confirmed so far:
+
+- A draft not approved within 30 days moves to Rejected.
+- Rejected drafts remain visible to Admins and Moderators for 30 days.
+- A rejected draft can be reconsidered and approved during that period.
+- Rejected drafts are automatically deleted after the 30-day rejected period.
+- Deactivated user history must be preserved.
+
+Open retention questions:
+
+- Does automatic deletion permanently purge the original transcript,
+  attachments, derived draft, and all versions, or retain a minimal audit
+  tombstone?
+- How long are published documents, archived documents, and deprecated documents
+  retained?
+- When a Moderator removes an attachment, is it immediately purged or retained
+  privately for a limited recovery/audit window?
+- How long should immutable original transcripts be kept after publication?
+- How long should audit logs and processing logs be kept?
+- Should admins be able to configure these durations?
+- Are backups required to honor deletion after a defined expiration period?
+
+Recommendation for an MVP prototype:
+
+- Keep published and archived documents until an authorized Admin deletes them.
+- Retain a minimal audit tombstone after automatic draft deletion, but purge the
+  transcript, attachments, redacted text, and generated content.
+- Retain published-document versions and audit history while the document
+  exists.
+- Display a confirmation explaining the scope and recoverability of manual
+  deletion.
+- Revisit all retention rules with the organization's security or compliance
+  owner before production use.
+
+
+======================================================================
+20. CORE DATA ENTITIES
+======================================================================
+
+The following is a conceptual model, not a final database schema:
+
+- Organization: the single organization represented by the deployment.
+- User: Webex-linked identity, profile, application role, and active status.
+- ChatProviderConnection: provider configuration and credentials/metadata.
+- SourceSpace: provider-neutral representation of a Webex space.
+- PinnedSpacePolicy: capture, browse, restriction, grouping, and classification
+  settings for a SourceSpace.
+- CaptureRequest: bot command, requester, provider event, timestamps, status,
+  idempotency key, and errors.
+- SourceThread: immutable normalized transcript metadata.
+- SourceMessage: ordered immutable message, author, time, parent/root IDs, and
+  provider identity.
+- Attachment: copied file metadata, security status, storage key, visibility,
+  and source message.
+- RedactionRecord: rule/version and sanitized-text metadata; avoid retaining
+  sensitive values redundantly.
+- ProcessingJob: background work type, attempts, state, timing, and safe error
+  details.
+- LLMRun: provider/model, prompt version, structured result, evidence mapping,
+  and timestamps.
+- Document: stable Q&A identity and current workflow/access state.
+- DocumentVersion: editable content snapshot and editor attribution.
+- Category: staff-managed controlled classification.
+- Tag: controlled tag record.
+- DocumentCategory / DocumentTag: many-to-many relationships.
+- ModerationAction: approval, rejection, archive, restore, and related notes.
+- ChangeRequest: Basic User report, comment, state, and resolution.
+- Favorite: per-user saved document.
+- AuditEvent: append-only important activity metadata.
+
+Key data rules:
+
+- Provider IDs are stored for traceability but kept outside core business logic.
+- The original transcript is immutable.
+- Published content is versioned separately from the source transcript.
+- Access is enforced at document, transcript, and attachment levels.
+- Categories and tags are many-to-many with documents.
+- One CaptureRequest normally creates one Document.
+
+
+======================================================================
+21. MVP SCOPE
+======================================================================
+
+Confirmed MVP capabilities:
+
+- Webex OAuth sign-in
+- One organization per deployment
+- Manually configured initial administrator
+- Admin, Moderator, and Basic User roles
+- User activation/deactivation and role management by Admins
+- Initial admin setup and pinned Webex space management
+- Webex bot and webhook/event ingestion
+- Explicit @<bot-name> document capture command
+- Admin/Moderator-only capture
+- Group-space thread capture using root-linked replies
+- Text and common supported attachments
+- Attachment copying into private TDS storage
+- Sensitive-identifier redaction before LLM processing
+- Replaceable LLM adapter
+- Source-grounded structured Q&A generation
+- Immutable original transcript
+- Pending-review dashboard
+- Review editor suitable for long Q&A material
+- Approve, Request Changes, Reject, Archive, and Delete actions
+- Unresolved documents
+- Thirty-day stale-review and rejected-draft behavior
+- Transcript visibility control, private by default
+- Moderator-managed categories and tags
+- AI tag suggestions requiring approval
+- Published document library
+- Keyword/full-text search with highlighted results
+- Filters for category, source space, author, date, and status
+- Search over permitted published content and transcripts
+- Favorites
+- Basic-user change requests
+- Attachment preview and download
+- Audit history
+- Processing failure and retry visibility
+- Responsive, desktop-first web interface
+- FAQ explaining TDS behavior and LLM use
+
+
+======================================================================
+22. POST-MVP AND DEFERRED FEATURES
+======================================================================
+
+Explicitly postponed:
+
+- Microsoft Teams integration
+- Slack integration
+- Other chat-provider integrations
+- Multiple organizations/tenants in one deployment
+- Additional chat-provider integrations for Knowledge Chat
+- OCR for image and screenshot content
+- Multiple-reviewer approval workflows
+- Automated knowledge expiration beyond the agreed queue rules
+- Advanced analytics
+- General user comments and document collaboration
+- Automatic duplicate-document merging
+
+Knowledge Chat requirement:
+
+- Answers must be grounded only in approved documents the user can access and
+  must include citations to those TDS documents.
+
+
+======================================================================
+23. IMPORTANT PRODUCT AND SECURITY RISKS
+======================================================================
+
+1. Source permission versus library permission
+   A user who was not a member of a Webex space may still see knowledge from it
+   when the space is pinned for their TDS team. This is intentional, but admins
+   need clear controls and warnings because publishing can broaden access.
+
+2. Sensitive data sent to an LLM
+   Pattern-based redaction is imperfect. Redaction must be configurable, tested,
+   and paired with appropriate provider agreements and data-handling settings.
+
+3. Transcript visibility
+   The private-by-default checkbox is important, but moderators also need a
+   preview of exactly what a Basic User will see before publication.
+
+4. Hallucination and unsupported instructions
+   Source evidence mapping, strict prompts, structured output, and human
+   approval reduce risk. They do not make AI output inherently trustworthy.
+
+5. Attachment security
+   Office and PDF files can contain malware, macros, personal data, or embedded
+   content. Validation, malware scanning, private storage, and authorized access
+   are required for production.
+
+6. Duplicate or changing threads
+   A source thread may receive new replies after capture. TDS needs a later
+   decision about recapture/refresh behavior while preventing accidental
+   duplicates.
+
+7. Deletion semantics
+   "Delete" must clearly state whether data remains in audit logs or backups.
+   Retention decisions must be finalized before sensitive production use.
+
+8. Free-tier production constraints
+   A free cloud tier is suitable for proving the experience, but production
+   capacity, security, backups, availability, and compliance need validation.
+
+
+======================================================================
+24. REMAINING HIGH-PRIORITY DECISIONS
+======================================================================
+
+The following questions should be resolved before the corresponding features
+are fully designed or implemented:
+
+1. Define "admin spaces" or TDS teams/groupings and determine whether one Webex
+   space can have different rules in multiple groupings.
+2. Finalize the pinned-space policy fields: capture enabled, browse enabled,
+   restricted audience, ignored/disabled, and who moderates each space.
+3. Finalize retention and purge rules for transcripts, attachments, versions,
+   audit records, rejected drafts, archived documents, and backups.
+4. Approve or revise the recommended 25 MB per-file and 100 MB per-document
+   attachment limits.
+5. Enumerate exact supported file extensions, including whether DOCX/XLSX only
+   or legacy DOC/XLS formats are allowed, and whether macro-enabled files are
+   prohibited.
+6. Decide whether categories are flat or hierarchical.
+7. Define who may mark content Verified and how verification dates are updated.
+8. Decide what happens when new replies are added to a Webex thread after it
+   has already been captured.
+9. Decide whether an Admin/Moderator can intentionally recapture a previously
+   captured thread and whether that updates the existing document or creates a
+   new version.
+10. Define author filtering: source message author, capture requester, document
+    creator, moderator, or some combination.
+11. Select the front-end framework used with Vite.
+12. Select the LLM provider and approve its organizational data-handling terms.
+13. Define exact organization-specific redaction patterns and whether additional
+    personal/security data must be redacted.
+14. Define manual deletion permissions and recovery behavior.
+15. Decide whether users receive in-app or external notifications when change
+    requests are resolved or documents they captured are approved/rejected.
+
+
+======================================================================
+25. CURRENT RECOMMENDED BUILD ORDER
+======================================================================
+
+1. Finalize access, pinned-space, and retention rules.
+2. Model identity, roles, source spaces, captures, documents, versions, and
+   visibility in the database.
+3. Build Webex sign-in and manually seeded Admin access.
+4. Build initial setup and pinned-space administration.
+5. Implement the provider-neutral chat adapter contract and Webex adapter.
+6. Implement idempotent capture, immutable transcript storage, attachment intake,
+   and background processing.
+7. Implement configurable redaction with a reviewable sanitized preview.
+8. Implement the structured LLM adapter and evidence mapping.
+9. Build the Admin/Moderator review dashboard and editor.
+10. Implement lifecycle actions, audit history, time-based transitions, and
+    processing retries.
+11. Build the published library, access-controlled search, filters, document
+    detail, attachments, and favorites.
+12. Add Basic User change requests, user management, categories/tags, Settings,
+    FAQ, and responsive refinement.
+13. Conduct security, permission, failure-recovery, and mobile usability testing
+    before treating the deployment as production-ready.
+
+
+======================================================================
+26. SHORT PRODUCT DEFINITION
+======================================================================
+
+The Document Source is a private, human-moderated knowledge system that captures
+authorized Webex Q&A threads, preserves their source material, redacts selected
+sensitive identifiers, uses a replaceable LLM to create source-grounded drafts,
+and publishes approved problem-to-solution documents into an access-controlled,
+searchable library.

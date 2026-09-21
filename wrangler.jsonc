@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "the-document-source",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-08-27",
+  "observability": {
+    "enabled": true
+  },
+  "placement": {
+    "mode": "smart"
+  },
+  "vars": {
+    "APP_ORIGIN": "https://the-document-source.nickolaskg.workers.dev",
+    "APPROVED_EMAIL_DOMAINS": "tdsynnex.com",
+    "SESSION_COOKIE_NAME": "__Host-tds_session",
+    "WEBEX_REDIRECT_URI": "https://the-document-source.nickolaskg.workers.dev/api/auth/webex/callback",
+    "LLM_MODEL": "gemini-2.5-flash"
+  },
+  "secrets": {
+    "required": ["SESSION_ENCRYPTION_KEY", "WEBEX_CLIENT_ID", "WEBEX_CLIENT_SECRET", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "WEBEX_BOT_ACCESS_TOKEN", "WEBEX_BOT_NAME", "WEBEX_WEBHOOK_SECRET", "GEMINI_AI_API"]
+  },
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  }
+}

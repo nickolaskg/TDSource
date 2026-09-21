@@ -1,0 +1,61 @@
+import { redactForLlm } from "../redaction/redact.js";
+
+export interface KnowledgeRecord {
+  id: string;
+  title: string;
+  summary: string;
+  problem: string;
+  steps: string[];
+  warnings: string[];
+  sourceText?: string;
+}
+
+export interface RankedKnowledge extends KnowledgeRecord {
+  score: number;
+}
+
+const tokenPattern = /[a-z0-9]{2,}/gi;
+
+function tokens(value: string): string[] {
+  return [...new Set(value.toLowerCase().match(tokenPattern) || [])];
+}
+
+export function rankKnowledge(query: string, records: readonly KnowledgeRecord[], limit = 6): RankedKnowledge[] {
+  const queryTokens = tokens(query);
+  if (queryTokens.length === 0) return [];
+  return records.map((record) => {
+    const title = tokens(record.title);
+    const body = tokens([record.summary, record.problem, ...record.steps, ...record.warnings, record.sourceText || ""].join(" "));
+    const score = queryTokens.reduce((total, token) => total + (title.includes(token) ? 4 : 0) + (body.includes(token) ? 1 : 0), 0);
+    return { ...record, score };
+  }).filter((record) => record.score > 0).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title)).slice(0, limit);
+}
+
+export function buildKnowledgeContext(records: readonly RankedKnowledge[]): string {
+  return records.map((record, index) => {
+    const source = `S${index + 1}`;
+    const text = [
+      `Title: ${record.title}`,
+      `Summary: ${record.summary}`,
+      `Problem: ${record.problem}`,
+      record.steps.length ? `Steps:\n${record.steps.map((step, stepIndex) => `${stepIndex + 1}. ${step}`).join("\n")}` : "",
+      record.warnings.length ? `Warnings:\n${record.warnings.join("\n")}` : "",
+      record.sourceText ? `Source transcript:\n${record.sourceText}` : "",
+    ].filter(Boolean).join("\n");
+    return `[${source}]\n${redactForLlm(text).sanitizedText}`;
+  }).join("\n\n");
+}
+
+export function parseChatResponse(value: unknown, sourceCount: number): { answer: string; citations: number[] } | null {
+  if (!value || typeof value !== "object") return null;
+  const body = value as { answer?: unknown; citations?: unknown };
+  if (typeof body.answer !== "string" || !body.answer.trim() || !Array.isArray(body.citations)) return null;
+  const citations = [...new Set(body.citations)].filter((item): item is number => Number.isInteger(item) && item >= 1 && item <= sourceCount);
+  return { answer: body.answer.trim(), citations };
+}
+
+export function chatQuestion(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const question = value.trim();
+  return question.length >= 2 && question.length <= 4000 ? question : null;
+}

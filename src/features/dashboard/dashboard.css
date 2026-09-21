@@ -1,0 +1,193 @@
+.dashboard-page {
+  max-width: 1392px;
+}
+
+.dashboard-page .page-heading {
+  align-items: flex-end;
+  margin-bottom: var(--tds-space-6, 32px);
+}
+
+.dashboard-page .page-heading h1 {
+  margin: var(--tds-space-2, 8px) 0 var(--tds-space-3, 12px);
+  color: var(--tds-text, #003031);
+  font: 700 clamp(2.25rem, 4vw, 3rem)/1.1 Arial, Helvetica, sans-serif;
+  letter-spacing: normal;
+}
+
+.dashboard-page .page-heading p {
+  max-width: 76ch;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.dashboard-page .status-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--tds-space-5, 24px);
+  margin-bottom: var(--tds-space-6, 32px);
+}
+
+.dashboard-page .status-card {
+  min-height: 152px;
+  padding: var(--tds-space-5, 24px);
+  border: 1px solid var(--tds-border, #d9d8d7);
+  border-radius: var(--tds-radius, 2px);
+  background: var(--tds-surface, #fff);
+  box-shadow: none;
+}
+
+.dashboard-page .status-card::after {
+  display: none;
+}
+
+.dashboard-page .status-card strong {
+  font: 700 2rem/1.2 Arial, Helvetica, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-page .status-card div span {
+  margin-top: var(--tds-space-2, 8px);
+  font-size: .875rem;
+  line-height: 1.4;
+}
+
+.dashboard-page .status-card small {
+  margin-top: var(--tds-space-3, 12px);
+  font-size: .75rem;
+  line-height: 1.5;
+}
+
+.dashboard-page .status-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+
+.dashboard-page .content-grid {
+  grid-template-columns: minmax(0, 1.65fr) minmax(280px, .75fr);
+  gap: var(--tds-space-6, 32px);
+}
+
+.dashboard-page .panel,
+.dashboard-page .library-link {
+  border-radius: var(--tds-radius, 2px);
+  box-shadow: none;
+}
+
+.dashboard-page .panel-heading {
+  padding: var(--tds-space-5, 24px);
+  border-bottom: 1px solid var(--tds-border, #d9d8d7);
+}
+
+.dashboard-page .panel-heading h2 {
+  font: 700 2rem/1.2 Arial, Helvetica, sans-serif;
+  letter-spacing: normal;
+}
+
+.dashboard-page .panel-heading p {
+  margin-top: var(--tds-space-2, 8px);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.dashboard-page .panel-heading a {
+  font-size: .875rem;
+  line-height: 1.4;
+}
+
+.dashboard-page .queue-list {
+  border-top: 0;
+}
+
+.dashboard-page .queue-row {
+  min-height: 104px;
+  gap: var(--tds-space-4, 16px);
+  padding: var(--tds-space-4, 16px) var(--tds-space-5, 24px);
+  border-bottom-color: var(--tds-border, #d9d8d7);
+}
+
+.dashboard-page .queue-row:hover {
+  background: var(--tds-cloud, #fffff6);
+}
+
+.dashboard-page .queue-copy h3 {
+  margin: var(--tds-space-2, 8px) 0;
+  font: 700 1.25rem/1.3 Arial, Helvetica, sans-serif;
+}
+
+.dashboard-page .queue-copy p,
+.dashboard-page .row-meta,
+.dashboard-page .queue-time {
+  font-size: .75rem;
+  line-height: 1.5;
+}
+
+.dashboard-page .tag,
+.dashboard-page .command-block,
+.dashboard-page .library-link {
+  border-radius: var(--tds-radius, 2px);
+}
+
+.dashboard-page .capture-help {
+  padding-bottom: var(--tds-space-5, 24px);
+}
+
+.dashboard-page .command-block {
+  margin: 0 var(--tds-space-5, 24px) var(--tds-space-3, 12px);
+  padding: var(--tds-space-3, 12px);
+  border-color: var(--tds-border, #d9d8d7);
+  background: var(--tds-recessed, #f0f0f0);
+}
+
+.dashboard-page .command-block code {
+  font-size: .875rem;
+}
+
+.dashboard-page .fine-print {
+  margin: var(--tds-space-4, 16px) var(--tds-space-5, 24px) 0;
+  font-size: .75rem;
+  line-height: 1.5;
+}
+
+.dashboard-page .library-link {
+  min-height: 88px;
+  padding: var(--tds-space-4, 16px) var(--tds-space-5, 24px);
+  background: var(--tds-action, #005758);
+}
+
+.dashboard-page .library-link strong {
+  font-size: .875rem;
+}
+
+.dashboard-page .library-link small {
+  font-size: .75rem;
+}
+
+@media (max-width: 1050px) {
+  .dashboard-page .status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .dashboard-page .page-heading h1 {
+    font-size: 2.25rem;
+  }
+
+  .dashboard-page .status-grid {
+    gap: var(--tds-space-3, 12px);
+  }
+
+  .dashboard-page .content-grid {
+    gap: var(--tds-space-5, 24px);
+  }
+
+  .dashboard-page .panel-heading {
+    padding: var(--tds-space-4, 16px);
+  }
+}
+
+@media (max-width: 430px) {
+  .dashboard-page .status-grid {
+    grid-template-columns: 1fr;
+  }
+}

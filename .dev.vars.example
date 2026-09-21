@@ -1,0 +1,23 @@
+# Copy to .dev.vars for local Worker development. Never commit the copied file.
+APP_ORIGIN=http://localhost:5173
+APPROVED_EMAIL_DOMAINS=tdsynnex.com
+SESSION_COOKIE_NAME=tds_session
+SESSION_ENCRYPTION_KEY=
+
+# Webex OAuth and bot credentials
+WEBEX_CLIENT_ID=
+WEBEX_CLIENT_SECRET=
+WEBEX_REDIRECT_URI=http://localhost:5173/api/auth/webex/callback
+WEBEX_BOT_ACCESS_TOKEN=
+WEBEX_BOT_NAME=
+WEBEX_WEBHOOK_SECRET=
+
+# Supabase server-side credentials
+SUPABASE_URL=
+SUPABASE_SECRET_KEY=
+# Legacy projects may use SUPABASE_SERVICE_ROLE_KEY instead.
+SUPABASE_SERVICE_ROLE_KEY=
+
+# Approved LLM provider credentials
+GEMINI_AI_API=
+LLM_MODEL=gemini-2.5-flash
