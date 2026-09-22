@@ -1,14 +1,5 @@
--- Permanently purge live document data while retaining only transient object-cleanup work.
--- Rollback removes the RPC and queue table; deleted documents cannot be restored by this migration.
-create table if not exists public.storage_purge_queue (
-  object_key text primary key,
-  created_at timestamptz not null default now(),
-  attempts integer not null default 0,
-  last_error text
-);
-alter table public.storage_purge_queue enable row level security;
-revoke all on public.storage_purge_queue from public, anon, authenticated;
-grant select, insert, update, delete on public.storage_purge_queue to service_role;
+-- Keep permanent deletion compatible with installations where the optional
+-- knowledge lifecycle migration has not been applied.
 
 create or replace function public.permanently_delete_document(
   p_document_id uuid, p_user_id uuid
@@ -40,15 +31,13 @@ begin
       where v.document_id=p_document_id and block ? 'assetKey'
     );
 
-  -- Knowledge lifecycle is optional in older installations. Clear replacement
-  -- links when that migration is present without making permanent deletion
-  -- depend on the column existing.
   if exists (
     select 1 from information_schema.columns
     where table_schema='public' and table_name='documents' and column_name='replacement_document_id'
   ) then
     execute 'update public.documents set replacement_document_id=null where replacement_document_id=$1' using p_document_id;
   end if;
+
   update public.documents set current_published_version_id=null where id=p_document_id;
   delete from public.audit_events
     where (target_type='document' and target_id=p_document_id)
