@@ -52,6 +52,7 @@ The scaffold uses these boundaries:
 - Redaction creates a separate LLM-bound value and never mutates source text.
 - Hidden transcript text may contribute to a permitted document match, but search responses must only contain visible published fields. No hidden source snippet, highlight, autocomplete value, or raw match payload may leave the API.
 - Permanent Q&A deletion must be implemented as a tracked purge across rows, private storage, indexes, previews, processing artifacts, and backups according to the still-open backup policy. It may not leave a tombstone.
+- The permanent-delete action purges live relational data, search chunks, processing records, and private SOP images. Failed object deletion remains in a server-only cleanup queue for retry. Supabase backup expiration remains governed by the organization-approved provider retention policy.
 
 ## Authoritative capture flow
 

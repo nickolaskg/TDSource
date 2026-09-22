@@ -2085,6 +2085,28 @@ async function archivePublishedDocument(request: Request, env: Env, documentId: 
   return json({ ok: true });
 }
 
+async function permanentlyDeleteDocument(request: Request, env: Env, documentId: string): Promise<Response> {
+  if (!isSameOrigin(request, env)) return json({ code: "INVALID_ORIGIN" }, 403);
+  const session = await readSession(request, env);
+  if (!session?.appUserId) return json({ code: "UNAUTHENTICATED" }, 401);
+  if (!(await authorizedDocumentIds(env, session, "revise")).includes(documentId)) return json({ code: "NOT_FOUND" }, 404);
+  await supabaseRequest<{ assetKeys?: string[] }>(env, "rpc/permanently_delete_document", {
+    method: "POST", body: JSON.stringify({ p_document_id: documentId, p_user_id: session.appUserId }),
+  });
+  const pending = await supabaseRequest<Array<{ object_key: string; attempts: number }>>(env, "storage_purge_queue?select=object_key,attempts&order=created_at.asc&limit=100");
+  const failed: string[] = [];
+  for (const { object_key: key, attempts } of pending) {
+    const response = await storageRequest(env, key, { method: "DELETE" }).catch(() => null);
+    if (response && (response.ok || response.status === 404)) {
+      await supabaseRequest<void>(env, `storage_purge_queue?object_key=eq.${encodeURIComponent(key)}`, { method: "DELETE", headers: { prefer: "return=minimal" } });
+    } else {
+      failed.push(key);
+      await supabaseRequest<void>(env, `storage_purge_queue?object_key=eq.${encodeURIComponent(key)}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ attempts: attempts + 1, last_error: "Object deletion failed" }) }).catch(() => undefined);
+    }
+  }
+  return json({ deleted: true, assetCleanupPending: failed.length > 0 }, failed.length ? 202 : 200);
+}
+
 async function getTeamMembers(request: Request, env: Env): Promise<Response> {
   const session = await readSession(request, env);
   if (!session?.appUserId || !session.organizationId) return json({ code: "UNAUTHENTICATED" }, 401);
@@ -2268,6 +2290,8 @@ async function handleApi(request: Request, env: Env, waitUntil: (promise: Promis
   if (request.method === "GET" && libraryMatch) return getLibraryDetail(request, env, libraryMatch[1]);
   if (request.method === "PATCH" && libraryMatch) return revisePublishedDocument(request, env, libraryMatch[1]);
   if (request.method === "DELETE" && libraryMatch) return archivePublishedDocument(request, env, libraryMatch[1]);
+  const permanentDeleteMatch = pathname.match(/^\/api\/library\/([0-9a-f-]+)\/permanent$/i);
+  if (request.method === "DELETE" && permanentDeleteMatch) return permanentlyDeleteDocument(request, env, permanentDeleteMatch[1]);
   const visibilityMatch = pathname.match(/^\/api\/library\/([0-9a-f-]+)\/organization-visibility$/i);
   if (request.method === "PATCH" && visibilityMatch) return setOrganizationVisibility(request, env, visibilityMatch[1]);
   const teamMatch = pathname.match(/^\/api\/admin\/teams\/([0-9a-f-]+)$/i);
