@@ -135,6 +135,22 @@ Migration `202609180017_rag_knowledge_chunks.sql` adds the access-filtered
 pgvector table and RPC. Embedding generation and chunk backfill remain a later
 deployment step; they must use the same lifecycle and visibility predicates.
 
+### Next implementation milestone: vector RAG activation
+
+Make semantic retrieval the next feature milestone. Generate embeddings for
+approved document chunks, backfill current published versions, update chunks on
+publish/deprecate/archive transitions, and query `search_knowledge_chunks`
+before invoking the LLM. The server must continue to enforce document access
+and lifecycle filters before returning context, and answers must cite the
+retrieved document/version records. Keep the current ranked text retrieval as
+a fallback until embedding coverage and operational monitoring are verified.
+
+Embedded Office images are presentation assets, not RAG text. Store supported
+images in private object storage and persist only bounded asset metadata and
+object keys alongside `source_content`. Serve images through an authenticated
+endpoint after the same document access and lifecycle checks used by the
+library. Do not store base64 image bodies in `document_versions.evidence_map`.
+
 1. Implement the approved team settings and sharing model in
    `team-settings-access.md`; preserve the remaining deletion constraints.
 2. Monitor encrypted, revocable Webex OAuth sessions in production and add an
