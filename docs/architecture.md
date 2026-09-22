@@ -118,7 +118,9 @@ Adapters remain disabled until values are provided for Webex OAuth/bot, Supabase
 Knowledge Chat is a server-only retrieval-augmented generation path. The API
 rechecks the signed TDS session, resolves the same organization and team access
 set used by the library, filters to current published `verified` or `unresolved`
-documents, and redacts content before sending it to Gemini. Responses include
+documents, and redacts content before sending it to the configured LLM provider.
+`LLM_PROVIDER` selects Gemini or a local Ollama server, while `LLM_MODEL` swaps
+models without changing application code. Responses include
 the approved document titles used as citations and never expose raw hidden
 transcripts to Basic users.
 

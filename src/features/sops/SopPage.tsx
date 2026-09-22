@@ -1,6 +1,8 @@
 import { ArrowRight, Check, Download, FileSpreadsheet, FileText, Info, LoaderCircle, Pencil, Plus, ShieldCheck, Sparkles, Trash2, UploadCloud, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { SOP_ACCEPT, SOP_LIMITS, sopFileError, sopMarkdown, type SopDraft, type SopResult } from "../../domain/sop";
+import { invalidateApiCache } from "../../lib/api-cache";
 import { useSopSession } from "./sopSession";
 import { readSopResponse } from "./response";
 import { OriginalFile, SopContentView } from "./SopContentView";
@@ -8,10 +10,11 @@ import { sopUploadForm } from "./content-review";
 import "./sops.css";
 import "../../styles/workflow.css";
 
-interface Configuration { aiAvailable?: boolean; providerTimeoutSeconds?: number; available: boolean; message: string; teams: Array<{ teamId: string; teamName: string }> }
+interface Configuration { aiAvailable?: boolean; provider?: "gemini" | "ollama"; model?: string; providerTimeoutSeconds?: number; available: boolean; message: string; teams: Array<{ teamId: string; teamName: string }> }
 const sizeLabel = (size: number) => size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`;
 
 export function SopPage() {
+  const navigate = useNavigate();
   const { resultFiles, setResultFiles, suggestEdits, setSuggestEdits, files, setFiles, title, setTitle, teamId, setTeamId, notes, setNotes, result, setResult, editing, setEditing } = useSopSession();
   const [config, setConfig] = useState<Configuration | null>(null);
   const [configError, setConfigError] = useState("");
@@ -100,8 +103,11 @@ export function SopPage() {
         credentials: "same-origin",
         body: JSON.stringify(result),
       });
-      const data = await readSopResponse<{ message?: string }>(response, "The SOP could not be submitted for review. Your draft is still here.");
+      const data = await readSopResponse<{ message?: string; documentId?: string }>(response, "The SOP could not be submitted for review. Your draft is still here.");
+      invalidateApiCache("/api/reviews");
+      invalidateApiCache("/api/dashboard");
       setSubmitMessage(data.message || "SOP submitted for review.");
+      navigate(data.documentId ? `/review?item=${encodeURIComponent(data.documentId)}` : "/review");
     } catch (cause) {
       submitRef.current = false;
       setSubmitError(cause instanceof Error ? cause.message : "The SOP could not be submitted for review. Your draft is still here.");
@@ -121,11 +127,11 @@ export function SopPage() {
   };
   return <div className={`page sop-page ${busy ? "is-generating" : ""}`}>
     <header className="page-heading"><div><span className="eyebrow">Moderator workspace</span><h1>{result ? "Review SOP draft" : "Standard operating procedures"}</h1><p>{result ? "Check the imported procedure against the original source before publishing." : "Import existing procedures while preserving their wording and structure."}</p></div><span className="sop-preview-badge">Local preview</span></header>
-    <div className="sop-notice"><Info size={19} aria-hidden="true" /><p><strong>Try it with sample documents.</strong> Every attached document and note is sent to Gemini for SOP parsing. Optional wording suggestions are a separate review aid. Use non-sensitive test content only. Your documents, notes, and draft stay available as you move around the app in this session. Download your draft before refreshing or signing out.</p></div>
+    <div className="sop-notice"><Info size={19} aria-hidden="true" /><p><strong>Try it with sample documents.</strong> Extracted document text and notes are sent to the configured AI provider for SOP parsing{config?.model ? ` (${config.provider === "ollama" ? "Ollama" : "Gemini"} · ${config.model})` : ""}. Embedded Office images remain visible for human review; PDF visual parsing requires a compatible provider. Optional wording suggestions are a separate review aid. Use non-sensitive test content only. Generation creates a local draft; select <strong>Submit for review</strong> after checking it to send the draft to the durable moderator queue.</p></div>
     {configError && <div className="sop-error" role="alert">{configError} <button type="button" onClick={() => setRetry((value) => value + 1)}>Try again</button></div>}
     {!config && !configError && <p role="status">Checking SOP generation…</p>}
     {config && !config.available && <div className="sop-error" role="status">{config.message}</div>}
-    {config?.available && config.aiAvailable === false && <p role="status">Configure Gemini before uploading SOP documents.</p>}
+    {config?.available && config.aiAvailable === false && <p role="status">Configure an AI provider before uploading SOP documents.</p>}
     {!result && <div className="sop-layout">
       <form className="panel sop-upload-panel" onSubmit={(event) => void generate(event)} aria-busy={busy}>
         <div className="sop-section-heading"><span className="sop-number">1</span><div><h2>Add your source material</h2><p>Combine documents that describe the same procedure.</p></div></div>
@@ -143,10 +149,10 @@ export function SopPage() {
           <label className="sop-consent"><input type="checkbox" checked={suggestEdits} disabled={config?.aiAvailable === false} onChange={(event) => setSuggestEdits(event.target.checked)} /><span>Ask AI for optional spelling, grammar, and wording suggestions. Review and accept each change separately.</span></label>
         </fieldset>
         {error && <div className="sop-error" role="alert">{error}</div>}
-        <div className="sop-form-footer"><span>{files.length ? `${files.length} document${files.length === 1 ? "" : "s"} · ${sizeLabel(files.reduce((sum, file) => sum + file.size, 0))}` : "Your source documents remain unchanged."}</span><button className="primary-button" disabled={busy || !config?.available || !files.length || !teamId} type="submit">{busy ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />} {busy ? "Importing SOP…" : "Submit SOP draft"}</button></div>
+        <div className="sop-form-footer"><span>{files.length ? `${files.length} document${files.length === 1 ? "" : "s"} · ${sizeLabel(files.reduce((sum, file) => sum + file.size, 0))}` : "Your source documents remain unchanged."}</span><button className="primary-button" disabled={busy || !config?.available || !files.length || !teamId} type="submit">{busy ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />} {busy ? "Importing SOP…" : "Generate SOP draft"}</button></div>
         {busy && <div className="sop-progress" role="status" aria-live="polite"><LoaderCircle size={22} className="spin" aria-hidden="true" /><div><strong>Working on your SOP…</strong><p>Reading the source structure{suggestEdits ? " and preparing optional AI suggestions" : ""}. This may take up to {timeoutMinutes} {timeoutMinutes === 1 ? "minute" : "minutes"}.</p><p aria-live="off">Elapsed: {elapsedSeconds} seconds</p><button type="button" onClick={() => requestRef.current?.abort()}>Cancel generation</button></div></div>}
       </form>
-      <aside className="sop-guide"><section className="sop-tip"><ShieldCheck size={20} aria-hidden="true" /><h3>You stay in control</h3><p>Generated procedures are unpublished drafts. Shared review and publication will be added in a later milestone.</p></section><section className="sop-tip"><FileText size={20} aria-hidden="true" /><h3>Keep visual context</h3><p>Word and Excel retain supported text formatting and images. Some layout and graphics may not transfer. PDF transcription uses AI and must be checked against the original; it does not guarantee completeness.</p></section></aside>
+      <aside className="sop-guide"><section className="sop-tip"><ShieldCheck size={20} aria-hidden="true" /><h3>You stay in control</h3><p>Generated procedures remain unpublished until you submit them for moderator review. Reviewers can edit, approve, reject, and choose whether approved knowledge is shared with everyone or kept private to the selected team.</p></section><section className="sop-tip"><FileText size={20} aria-hidden="true" /><h3>Keep visual context</h3><p>Word and Excel retain supported text formatting and images. Some layout and graphics may not transfer. PDF transcription uses AI and must be checked against the original; it does not guarantee completeness.</p></section></aside>
     </div>}
     {result && <section ref={draftRef} tabIndex={-1} className="panel sop-result" aria-labelledby="sop-draft-heading">
       <header className="sop-result-heading"><div><span className="eyebrow">Unpublished · Review required</span><h2 id="sop-draft-heading">Your SOP draft</h2><p>Review the imported content and make any changes before publication. This draft is not yet in the knowledge library.</p></div><div className="sop-result-actions">{!result.content && <button type="button" className="sop-secondary-button" disabled={busy || submitting} onClick={() => setEditing((value) => !value)}>{editing ? <Check size={16} /> : <Pencil size={16} />}{editing ? "Preview draft" : "Edit draft"}</button>}<button type="button" className="primary-button" onClick={download}><Download size={16} />Download draft</button><button type="button" className="primary-button sop-submit-button" disabled={submitting || Boolean(submitMessage)} onClick={() => void submitForReview()}>{submitting ? <LoaderCircle size={16} className="spin" /> : <ShieldCheck size={16} />}{submitting ? "Submitting…" : submitMessage ? "Submitted for review" : "Submit for review"}</button><button type="button" className="sop-secondary-button" disabled={submitting} onClick={() => { setResult(null); setResultFiles([]); setFiles([]); setTitle(""); setNotes(""); setSuggestEdits(false); setEditing(false); submitRef.current = false; setSubmitMessage(""); setSubmitError(""); }}>Create another SOP</button></div>{submitMessage && <p className="sop-submit-message" role="status">{submitMessage}</p>}{submitError && <p className="sop-submit-error" role="alert">{submitError}</p>}</header>
@@ -163,8 +169,3 @@ export function SopPage() {
     </section>}
   </div>;
 }
-
-
-
-
-

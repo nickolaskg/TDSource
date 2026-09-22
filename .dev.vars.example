@@ -18,6 +18,11 @@ SUPABASE_SECRET_KEY=
 # Legacy projects may use SUPABASE_SERVICE_ROLE_KEY instead.
 SUPABASE_SERVICE_ROLE_KEY=
 
-# Approved LLM provider credentials
-GEMINI_AI_API=
+# AI provider. Use "gemini" for hosted Gemini or "ollama" for a local server.
+LLM_PROVIDER=gemini
 LLM_MODEL=gemini-2.5-flash
+LLM_BASE_URL=http://127.0.0.1:11434
+LLM_CONTEXT_TOKENS=16384
+# Gemini requires GEMINI_AI_API. Ollama normally requires no key.
+GEMINI_AI_API=
+LLM_API_KEY=

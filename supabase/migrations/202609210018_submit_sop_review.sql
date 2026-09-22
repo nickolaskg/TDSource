@@ -15,7 +15,7 @@ create or replace function public.submit_sop_review(
   p_summary text,
   p_steps jsonb,
   p_warnings jsonb
-) returns jsonb language plpgsql security definer set search_path = public as $$
+) returns jsonb language plpgsql security definer set search_path = public, extensions as $$
 declare
   v_space_id uuid;
   v_document_id uuid;

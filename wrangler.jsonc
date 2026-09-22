@@ -14,6 +14,7 @@
     "APPROVED_EMAIL_DOMAINS": "tdsynnex.com",
     "SESSION_COOKIE_NAME": "__Host-tds_session",
     "WEBEX_REDIRECT_URI": "https://the-document-source.nickolaskg.workers.dev/api/auth/webex/callback",
+    "LLM_PROVIDER": "gemini",
     "LLM_MODEL": "gemini-2.5-flash"
   },
   "secrets": {

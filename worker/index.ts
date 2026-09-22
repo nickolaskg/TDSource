@@ -1,12 +1,13 @@
 import { isCurrentKnowledge, libraryLifecycleFilter, mutateKnowledgeLifecycle } from "../server/modules/knowledge/lifecycle.js";
 import { handleSopRequest, localOrigin } from "../server/modules/sops/generate.js";
-import { validateSopSubmission } from "../server/modules/sops/submit-review.js";
+import { storageSteps, validateSopSubmission } from "../server/modules/sops/submit-review.js";
 
 import { isApprovedEmail } from "../server/modules/auth/email-domain.js";
 import { parseCaptureCommand, type CaptureCommand } from "../server/modules/capture/command.js";
 import { redactForLlm } from "../server/modules/redaction/redact.js";
 import { resolveCaptureReviewTeam } from "../server/modules/access/team-policy.js";
-import { geminiKey, integrationStatus, supabaseSecret } from "../server/modules/config/integration-status.js";
+import { integrationStatus, llmConfigured, supabaseSecret } from "../server/modules/config/integration-status.js";
+import { requestLlmJson } from "../server/modules/llm/provider.js";
 import { buildKnowledgeContext, chatQuestion, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "../server/modules/knowledge/chat.js";
 
 interface Env {
@@ -25,6 +26,8 @@ interface Env {
   SUPABASE_ANON_KEY?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
   LLM_PROVIDER?: string;
+  LLM_BASE_URL?: string;
+  LLM_CONTEXT_TOKENS?: string;
   LLM_API_KEY?: string;
   LLM_MODEL?: string;
   GEMINI_AI_API?: string;
@@ -183,7 +186,7 @@ interface CaptureRpcResult {
   upToDate?: boolean;
 }
 
-interface GeminiDraft {
+interface GeneratedDraft {
   title: string;
   problem: string;
   summary: string;
@@ -236,7 +239,10 @@ async function supabaseRequest<T>(env: Env, path: string, init: RequestInit = {}
   if (init.body) headers.set("content-type", "application/json");
   const response = await fetch(`${baseUrl}/rest/v1/${path}`, { ...init, headers });
   if (!response.ok) {
-    console.error("Supabase request failed", path.split("?")[0], response.status);
+    const failure = await response.text();
+    let code = "UNKNOWN";
+    try { code = (JSON.parse(failure) as { code?: string }).code || code; } catch { /* non-JSON gateway response */ }
+    console.error("Supabase request failed", path.split("?")[0], response.status, code);
     throw new Error(`Supabase request failed with status ${response.status}`);
   }
   if (response.status === 204) return undefined as T;
@@ -948,22 +954,23 @@ export function normalizedSourceMessages(
     .map(({ id, parentId, personId, personEmail, personDisplayName, text, markdown, created }) => ({ id, parentId, personId, personEmail, personDisplayName, text, markdown, created }));
 }
 
-export function validateGeminiDraft(value: unknown, messageCount: number): GeminiDraft {
-  if (!value || typeof value !== "object") throw new Error("Gemini draft was not an object");
-  const draft = value as Partial<GeminiDraft>;
-  if (![draft.title, draft.problem, draft.summary].every((item) => typeof item === "string" && item.trim().length > 0)) throw new Error("Gemini draft text was incomplete");
-  if (!Array.isArray(draft.steps) || !draft.steps.every((item) => typeof item === "string")) throw new Error("Gemini steps were invalid");
-  if (!Array.isArray(draft.warnings) || !draft.warnings.every((item) => typeof item === "string")) throw new Error("Gemini warnings were invalid");
+export function validateGeneratedDraft(value: unknown, messageCount: number): GeneratedDraft {
+  if (!value || typeof value !== "object") throw new Error("Generated draft was not an object");
+  const draft = value as Partial<GeneratedDraft>;
+  if (![draft.title, draft.problem, draft.summary].every((item) => typeof item === "string" && item.trim().length > 0)) throw new Error("Generated draft text was incomplete");
+  if (!Array.isArray(draft.steps) || !draft.steps.every((item) => typeof item === "string")) throw new Error("Generated steps were invalid");
+  if (!Array.isArray(draft.warnings) || !draft.warnings.every((item) => typeof item === "string")) throw new Error("Generated warnings were invalid");
   const evidence = draft.evidence;
-  if (!evidence || !Array.isArray(evidence.problem) || !Array.isArray(evidence.summary) || !Array.isArray(evidence.steps) || !Array.isArray(evidence.warnings)) throw new Error("Gemini evidence was invalid");
+  if (!evidence || !Array.isArray(evidence.problem) || !Array.isArray(evidence.summary) || !Array.isArray(evidence.steps) || !Array.isArray(evidence.warnings)) throw new Error("Generated evidence was invalid");
   const indices = [...evidence.problem, ...evidence.summary, ...evidence.steps.flat(), ...evidence.warnings.flat()];
-  if (!indices.every((index) => Number.isInteger(index) && index >= 1 && index <= messageCount)) throw new Error("Gemini evidence referenced an invalid message");
-  return draft as GeminiDraft;
+  if (!indices.every((index) => Number.isInteger(index) && index >= 1 && index <= messageCount)) throw new Error("Generated evidence referenced an invalid message");
+  return draft as GeneratedDraft;
 }
+// Backward-compatible export for existing callers while provider names become neutral.
+export const validateGeminiDraft = validateGeneratedDraft;
 
-async function generateGeminiDraft(env: Env, messages: Array<Record<string, string | undefined>>): Promise<GeminiDraft> {
-  const apiKey = geminiKey(env);
-  if (!apiKey) throw new Error("Gemini is not configured");
+async function generateLlmDraft(env: Env, messages: Array<Record<string, string | undefined>>): Promise<GeneratedDraft> {
+  if (!llmConfigured(env)) throw new Error("AI provider is not configured");
   const transcript = messages.map((message, index) => `[M${index + 1}] ${message.markdown || message.text || "[Attachment or rich content]"}`).join("\n\n");
   const sanitized = redactForLlm(transcript).sanitizedText;
   const schema = {
@@ -977,30 +984,34 @@ async function generateGeminiDraft(env: Env, messages: Array<Record<string, stri
       } },
     },
   };
-  const model = env.LLM_MODEL?.trim() || "gemini-2.5-flash";
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: "Create a concise internal knowledge draft using only the supplied source. Do not invent facts. Preserve uncertainty. Each evidence index is the 1-based source message number supporting that field. Every non-empty step and warning must have a corresponding evidence array." }] },
-      contents: [{ role: "user", parts: [{ text: `Convert this synthetic Webex test thread into a review draft:\n\n${sanitized}` }] }],
-      generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseJsonSchema: schema },
-    }),
+  const output = await requestLlmJson({
+    env,
+    systemPrompt: "Create a concise internal knowledge draft using only the supplied source. Do not invent facts. Preserve uncertainty. Each evidence index is the 1-based source message number supporting that field. Every non-empty step and warning must have a corresponding evidence array.",
+    parts: [{ text: `Convert this synthetic Webex test thread into a review draft:\n\n${sanitized}` }],
+    schema,
   });
-  if (!response.ok) throw new Error(`Gemini request failed with status ${response.status}`);
-  const payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  const output = payload.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("");
-  if (!output) throw new Error("Gemini returned no draft");
-  return validateGeminiDraft(JSON.parse(output), messages.length);
+  return validateGeneratedDraft(output, messages.length);
 }
 
-function evidenceToProviderIds(draft: GeminiDraft, messages: Array<Record<string, string | undefined>>): Record<string, unknown> {
+function evidenceToProviderIds(draft: GeneratedDraft, messages: Array<Record<string, string | undefined>>): Record<string, unknown> {
   const ids = (indices: number[]) => indices.map((index) => messages[index - 1]?.id).filter(Boolean);
   return { problem: ids(draft.evidence.problem), summary: ids(draft.evidence.summary), steps: draft.evidence.steps.map(ids), warnings: draft.evidence.warnings.map(ids) };
 }
 
 function isSameOrigin(request: Request, env: Env): boolean {
   const origin = request.headers.get("origin");
-  return Boolean(origin && origin === appOrigin(request, env));
+  const expected = appOrigin(request, env);
+  if (!origin) return false;
+  if (origin === expected) return true;
+  // Local development commonly switches between localhost and 127.0.0.1.
+  // Keep production origin checks exact while accepting those equivalent loopback aliases.
+  try {
+    const actualUrl = new URL(origin);
+    const expectedUrl = new URL(expected);
+    return localOrigin(origin) && localOrigin(expected) && actualUrl.protocol === expectedUrl.protocol && actualUrl.port === expectedUrl.port;
+  } catch {
+    return false;
+  }
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -1165,7 +1176,7 @@ async function processWebexWebhook(payload: WebexWebhookPayload, env: Env): Prom
       return;
     }
     try {
-      const draft = await generateGeminiDraft(env, messages);
+      const draft = await generateLlmDraft(env, messages);
       await supabaseRequest<string>(env, "rpc/complete_generated_draft", {
         method: "POST", body: JSON.stringify({
           p_document_id: capture.documentId, p_snapshot_id: capture.snapshotId, p_user_id: actor.id,
@@ -1206,8 +1217,8 @@ async function configureWebexWebhook(request: Request, env: Env): Promise<Respon
   if (!isSameOrigin(request, env)) return json({ code: "INVALID_ORIGIN" }, 403);
   const session = await readSession(request, env);
   if (!session?.teamRoles?.some(({ role }) => role === "admin")) return json({ code: "ADMIN_REQUIRED" }, 403);
-  if (!env.WEBEX_BOT_ACCESS_TOKEN || !env.WEBEX_WEBHOOK_SECRET || !geminiKey(env)) {
-    return json({ code: "PIPELINE_NOT_CONFIGURED", message: "Bot, webhook, and Gemini settings are required." }, 503);
+  if (!env.WEBEX_BOT_ACCESS_TOKEN || !env.WEBEX_WEBHOOK_SECRET || !llmConfigured(env)) {
+    return json({ code: "PIPELINE_NOT_CONFIGURED", message: "Bot, webhook, and AI provider settings are required." }, 503);
   }
   const targetUrl = new URL("/api/webhooks/webex", appOrigin(request, env)).toString();
   const listed = await webexTokenData<WebexList<{ id?: string; targetUrl?: string; resource?: string; event?: string; filter?: string }>>("webhooks?max=100", env.WEBEX_BOT_ACCESS_TOKEN);
@@ -1663,15 +1674,26 @@ async function getReviewQueue(request: Request, env: Env): Promise<Response> {
   const latestCaptures = captures.filter((capture, index) => captures.findIndex(({ document_id }) => document_id === capture.document_id) === index);
   if (latestCaptures.length === 0) return json({ items: [] });
   const docIds = latestCaptures.map(({ document_id }) => document_id);
-  const documents = await supabaseRequest<Array<{ id: string; workflow_state: string; source_space_id: string; review_team_id: string; organization_wide: boolean; current_published_version_id: string | null; updated_at: string }>>(env,
+  const documents = await supabaseRequest<Array<{ id: string; workflow_state: string; source_space_id: string; review_team_id: string | null; organization_wide: boolean; current_published_version_id: string | null; updated_at: string }>>(env,
     `documents?id=${inFilter(docIds)}&select=id,workflow_state,source_space_id,review_team_id,organization_wide,current_published_version_id,updated_at&order=updated_at.desc`);
-  const [versions, spaces, reviewTeams] = await Promise.all([
+  const [versions, spaces, documentTeams] = await Promise.all([
     supabaseRequest<Array<{ id: string; document_id: string; title: string; summary: string; version_number: number; created_at: string }>>(env,
       `document_versions?document_id=${inFilter(docIds)}&select=id,document_id,title,summary,version_number,created_at&order=version_number.desc`),
-    supabaseRequest<Array<{ id: string; display_name: string }>>(env,
-      `source_spaces?id=${inFilter([...new Set(documents.map(({ source_space_id }) => source_space_id))])}&select=id,display_name`),
-    supabaseRequest<Array<{ id: string; name: string }>>(env, `teams?id=${inFilter([...new Set(documents.map(({ review_team_id }) => review_team_id))])}&select=id,name`),
+    (() => {
+      const sourceSpaceIds = [...new Set(documents.map(({ source_space_id }) => source_space_id).filter(Boolean))];
+      return sourceSpaceIds.length
+        ? supabaseRequest<Array<{ id: string; display_name: string }>>(env, `source_spaces?id=${inFilter(sourceSpaceIds)}&select=id,display_name`)
+        : Promise.resolve([] as Array<{ id: string; display_name: string }>);
+    })(),
+    supabaseRequest<Array<{ document_id: string; team_id: string }>>(env,
+      `document_teams?document_id=${inFilter(docIds)}&select=document_id,team_id`),
   ]);
+  const teamByDocument = new Map(documentTeams.map(({ document_id, team_id }) => [document_id, team_id]));
+  documents.forEach(({ id, review_team_id }) => { if (review_team_id) teamByDocument.set(id, review_team_id); });
+  const reviewTeamIds = [...new Set(documents.map(({ id }) => teamByDocument.get(id)).filter((id): id is string => Boolean(id)))];
+  const reviewTeams = reviewTeamIds.length
+    ? await supabaseRequest<Array<{ id: string; name: string }>>(env, `teams?id=${inFilter(reviewTeamIds)}&select=id,name`)
+    : [];
   const userIds = [...new Set(latestCaptures.map(({ requested_by_user_id }) => requested_by_user_id))];
   const users = userIds.length ? await supabaseRequest<Array<{ id: string; display_name: string }>>(env, `users?id=${inFilter(userIds)}&select=id,display_name`) : [];
   return json({ items: documents.map((document) => {
@@ -1680,7 +1702,7 @@ async function getReviewQueue(request: Request, env: Env): Promise<Response> {
     return {
       id: document.id, title: version?.title || "Untitled draft", summary: version?.summary || "",
       sourceSpace: spaces.find(({ id }) => id === document.source_space_id)?.display_name || "Webex space",
-      teamName: reviewTeams.find(({ id }) => id === document.review_team_id)?.name || "Assigned team", reason: capture?.command === "update" ? "thread_update" : "new_capture",
+      teamName: reviewTeams.find(({ id }) => id === teamByDocument.get(document.id))?.name || "Assigned team", reason: capture?.command === "update" ? "thread_update" : "new_capture",
       requestedBy: users.find(({ id }) => id === capture?.requested_by_user_id)?.display_name || "TDS user",
       requestedAt: capture?.created_at || document.updated_at, workflowState: "awaiting_review",
       organizationWide: defaultReviewOrganizationWide(document.organization_wide, Boolean(document.current_published_version_id)),
@@ -1872,24 +1894,19 @@ async function chatKnowledge(request: Request, env: Env): Promise<Response> {
   });
   const ranked = rankKnowledge(question, records);
   if (ranked.length === 0) return json({ answer: "I could not find a matching answer in the published knowledge base.", citations: [], sources: [] });
-  const apiKey = geminiKey(env);
-  if (!apiKey) return json({ code: "LLM_UNAVAILABLE", message: "Knowledge chat is temporarily unavailable." }, 503);
-  const model = env.LLM_MODEL?.trim() || "gemini-2.5-flash";
+  if (!llmConfigured(env)) return json({ code: "LLM_UNAVAILABLE", message: "Knowledge chat is temporarily unavailable." }, 503);
   const sourceCount = ranked.length;
   const sanitizedQuestion = redactForLlm(question).sanitizedText;
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: "Answer only from the supplied published knowledge. If it does not answer the question, say so. Do not invent facts. Cite supporting source numbers in the citations array." }] },
-      contents: [{ role: "user", parts: [{ text: `Question:\n${sanitizedQuestion}\n\nPublished knowledge:\n${buildKnowledgeContext(ranked)}` }] }],
-      generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseJsonSchema: { type: "object", required: ["answer", "citations"], properties: { answer: { type: "string" }, citations: { type: "array", items: { type: "integer" } } } } },
-    }),
-  });
-  if (!response.ok) return json({ code: "LLM_UNAVAILABLE", message: "Knowledge chat is temporarily unavailable." }, 503);
-  const payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  const output = payload.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("");
   let parsed: { answer: string; citations: number[] } | null = null;
-  try { parsed = parseChatResponse(output ? JSON.parse(output) : null, sourceCount); } catch { parsed = null; }
+  try {
+    const output = await requestLlmJson({
+      env,
+      systemPrompt: "Answer only from the supplied published knowledge. If it does not answer the question, say so. Do not invent facts. Cite supporting source numbers in the citations array.",
+      parts: [{ text: `Question:\n${sanitizedQuestion}\n\nPublished knowledge:\n${buildKnowledgeContext(ranked)}` }],
+      schema: { type: "object", required: ["answer", "citations"], properties: { answer: { type: "string" }, citations: { type: "array", items: { type: "integer" } } } },
+    });
+    parsed = parseChatResponse(output, sourceCount);
+  } catch { parsed = null; }
   if (!parsed) return json({ code: "LLM_INVALID_RESPONSE", message: "Knowledge chat returned an invalid answer." }, 502);
   return json({ answer: parsed.answer, citations: parsed.citations.map((index) => `S${index}`), sources: parsed.citations.map((index) => ({ id: ranked[index - 1].id, title: ranked[index - 1].title })) });
 }
@@ -2054,13 +2071,16 @@ async function submitSopReview(request: Request, env: Env): Promise<Response> {
         p_title: submission.draft.title,
         p_problem: submission.draft.summary,
         p_summary: submission.draft.summary,
-        p_steps: submission.draft.steps,
+        p_steps: storageSteps(submission),
         p_warnings: [...submission.draft.warnings, ...submission.draft.openQuestions.map((item) => `Open question: ${item}`)],
       }),
     });
     return json(result, 201);
   } catch (error) {
     console.error("SOP review submission failed", error instanceof Error ? error.message : "Unknown error");
+    if (error instanceof Error && error.message.includes("status 404")) {
+      return json({ code: "DATABASE_MIGRATION_REQUIRED", message: "SOP review storage is not installed in this Supabase project. Apply migrations 202609210018 and 202609210019, then submit this draft again." }, 503);
+    }
     return json({ code: "SUBMISSION_FAILED", message: "The SOP could not be submitted for review." }, 502);
   }
 }

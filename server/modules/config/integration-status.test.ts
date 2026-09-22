@@ -20,4 +20,8 @@ describe("integrationStatus", () => {
   it("accepts the legacy service-role key during migration", () => {
     expect(integrationStatus({ ...configured, SUPABASE_SECRET_KEY: "", SUPABASE_SERVICE_ROLE_KEY: "legacy-key" }).supabaseConfigured).toBe(true);
   });
+
+  it("configures local Ollama without a hosted API key", () => {
+    expect(integrationStatus({ ...configured, LLM_PROVIDER: "ollama", LLM_MODEL: "qwen2.5vl:3b" })).toMatchObject({ llmConfigured: true, llmProvider: "ollama", llmModel: "qwen2.5vl:3b" });
+  });
 });

@@ -21,7 +21,7 @@ const runSchema = z.object({ text: z.string().max(8000), bold: z.boolean().optio
 const blockSchema = z.object({
   id: z.string().max(200), sourceId: z.string().max(100), type: z.enum(["heading", "paragraph", "list-item", "table", "image"]),
   runs: z.array(runSchema).max(500).optional(), level: z.number().int().optional(), ordered: z.boolean().optional(), marker: z.string().max(20).optional(),
-  rows: z.array(z.array(z.array(runSchema).max(100)).max(100)).max(100).optional(), src: z.string().max(200).optional(), alt: z.string().max(1000).optional(),
+  rows: z.array(z.array(z.array(runSchema).max(100)).max(100)).max(100).optional(), src: z.string().max(4 * 1024 * 1024).optional(), alt: z.string().max(1000).optional(),
 });
 const contentSchema = z.object({ blocks: z.array(blockSchema).max(1000), suggestions: z.array(z.object({ blockId: z.string().max(200), original: text, replacement: text, reason: text })).max(500), limitations: z.array(text).max(100) });
 const submissionSchema = z.object({ teamId: z.string().trim().min(1).max(100), generatedAt: z.string().datetime(), draft: draftSchema, sources: z.array(sourceSchema).min(1).max(10), content: contentSchema.optional() });
@@ -43,6 +43,11 @@ export interface ValidatedSopSubmission {
   sourceProviderId: string;
   sourceSpaceProviderId: string;
   sourceMarkdown: string;
+}
+
+/** Convert the editor's structured steps to the text array used by the review/library schema. */
+export function storageSteps(submission: Pick<ValidatedSopSubmission, "draft">): string[] {
+  return submission.draft.steps.map(({ title, instruction, sourceIds }) => `${title}\n${instruction}\nSources: ${sourceIds.join(", ")}`);
 }
 
 function stripBinary(content: SopContent): SopContent {

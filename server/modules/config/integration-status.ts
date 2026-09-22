@@ -11,6 +11,10 @@ export interface IntegrationEnvironment {
   SUPABASE_SERVICE_ROLE_KEY?: string;
   GEMINI_AI_API?: string;
   LLM_API_KEY?: string;
+  LLM_PROVIDER?: string;
+  LLM_BASE_URL?: string;
+  LLM_MODEL?: string;
+  LLM_CONTEXT_TOKENS?: string;
 }
 
 function isConfigured(...values: Array<string | undefined>): boolean {
@@ -19,6 +23,22 @@ function isConfigured(...values: Array<string | undefined>): boolean {
 
 export function geminiKey(env: IntegrationEnvironment): string | undefined {
   return env.GEMINI_AI_API?.trim() || env.LLM_API_KEY?.trim();
+}
+
+export function llmProvider(env: IntegrationEnvironment): "gemini" | "ollama" {
+  return env.LLM_PROVIDER?.trim().toLowerCase() === "ollama" ? "ollama" : "gemini";
+}
+
+export function llmModel(env: IntegrationEnvironment): string {
+  return env.LLM_MODEL?.trim() || (llmProvider(env) === "ollama" ? "qwen2.5vl:3b" : "gemini-2.5-flash");
+}
+
+export function llmBaseUrl(env: IntegrationEnvironment): string {
+  return (env.LLM_BASE_URL?.trim() || "http://127.0.0.1:11434").replace(/\/+$/, "");
+}
+
+export function llmConfigured(env: IntegrationEnvironment): boolean {
+  return llmProvider(env) === "ollama" ? Boolean(llmBaseUrl(env)) : Boolean(geminiKey(env));
 }
 
 export function supabaseSecret(env: IntegrationEnvironment): string | undefined {
@@ -30,6 +50,8 @@ export function integrationStatus(env: IntegrationEnvironment) {
     webexOAuthConfigured: isConfigured(env.WEBEX_CLIENT_ID, env.WEBEX_CLIENT_SECRET, env.WEBEX_REDIRECT_URI, env.SESSION_ENCRYPTION_KEY),
     webexBotConfigured: isConfigured(env.WEBEX_BOT_ACCESS_TOKEN, env.WEBEX_BOT_NAME, env.WEBEX_WEBHOOK_SECRET),
     supabaseConfigured: isConfigured(env.SUPABASE_URL, supabaseSecret(env)),
-    llmConfigured: isConfigured(geminiKey(env)),
+    llmConfigured: llmConfigured(env),
+    llmProvider: llmProvider(env),
+    llmModel: llmModel(env),
   };
 }

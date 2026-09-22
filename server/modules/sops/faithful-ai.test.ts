@@ -21,6 +21,19 @@ describe("faithful SOP import", () => {
     expect(result.content?.suggestions).toEqual([]); expect(fetcher).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(fetcher.mock.calls[0])).toContain(original);
   });
+  it("does not send Office screenshots when the response schema cannot use them", async () => {
+    const zipped = zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "word/document.xml": strToU8(`<w:document><w:body><w:p><w:r><w:t>${original}</w:t></w:r><w:drawing><a:blip r:embed="rIdPicture"/></w:drawing></w:p></w:body></w:document>`),
+      "word/_rels/document.xml.rels": strToU8('<Relationships><Relationship Id="rIdPicture" Target="media/image1.png"/></Relationships>'),
+      "word/media/image1.png": new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+    });
+    const fetcher = vi.fn(async () => Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(base) }] } }] }));
+    vi.stubGlobal("fetch", fetcher);
+    const result = await generateSop([new File([new Uint8Array(zipped)], "procedure.docx")], "", "", "team", env);
+    expect(result.content?.blocks.some(({ type }) => type === "image")).toBe(true);
+    expect(String((fetcher.mock.calls[0] as unknown as [string, RequestInit])[1].body)).not.toContain("inlineData");
+  });
   it("keeps a Word import when optional AI parsing is unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("quota", { status: 429 })));
     const result = await generateSop([doc()], "", "", "team", env);

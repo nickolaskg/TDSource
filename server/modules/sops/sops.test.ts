@@ -145,7 +145,7 @@ describe("SOP access and generation", () => {
     const response = await handleSopRequest(upload({ file: new File(["%PDF-1.7 synthetic"], "sample.pdf") }), env, async () => moderator);
     expect(response.status).toBe(503);
     const message = await response.text();
-    expect(message).toContain("Gemini rejected the local API credentials"); expect(message).not.toContain("SECRET");
+    expect(message).toContain("Gemini rejected the configured credentials"); expect(message).not.toContain("SECRET");
   });
   it("exports the edited draft with an unpublished label and source names", () => {
     const markdown = sopMarkdown({ draft, sources: [{ id: "D1", name: "sample.docx", kind: "docx", warnings: [] }], generatedAt: "2026-09-18", teamId: "team-1" });

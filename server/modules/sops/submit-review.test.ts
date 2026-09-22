@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateSopSubmission } from "./submit-review.js";
+import { storageSteps, validateSopSubmission } from "./submit-review.js";
 
 const valid = {
   teamId: "team-1",
@@ -17,12 +17,20 @@ const valid = {
 
 describe("SOP review submission validation", () => {
   it("normalizes a valid generated result and creates markdown without binary data", () => {
-    const submission = validateSopSubmission(valid);
+    const submission = validateSopSubmission({
+      ...valid,
+      content: {
+        blocks: [{ id: "D1-B1", sourceId: "D1", type: "image", src: `data:image/png;base64,${"A".repeat(64_000)}`, alt: "Embedded screenshot" }],
+        suggestions: [],
+        limitations: [],
+      },
+    });
     expect(submission.teamId).toBe("team-1");
-    expect(submission.sourceMarkdown).toContain("Unpublished AI draft");
+    expect(submission.sourceMarkdown).toContain("Unpublished imported draft");
     expect(submission.sourceMarkdown).toContain("sample.docx");
     expect(submission.sourceProviderId).toMatch(/^upload:[0-9a-f-]{36}$/);
     expect(submission.sourceMarkdown).not.toContain("data:");
+    expect(submission.sourceMarkdown).toContain("Image unavailable");
   });
 
   it("builds review steps from an imported document when the draft has content blocks only", () => {
@@ -42,6 +50,11 @@ describe("SOP review submission validation", () => {
       { title: "Open Settings", instruction: "Open Settings", sourceIds: ["D1"] },
       { title: "Imported procedure step 2", instruction: "Choose the team settings page.", sourceIds: ["D1"] },
     ]);
+  });
+
+  it("flattens structured steps for the existing review and RAG storage schema", () => {
+    const submission = validateSopSubmission(valid);
+    expect(storageSteps(submission)).toEqual(["Open Settings\nChoose Create team.\nSources: D1"]);
   });
 
   it("rejects unknown source references and oversized untrusted text", () => {

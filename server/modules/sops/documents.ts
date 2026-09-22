@@ -2,10 +2,10 @@ import { unzipSync } from "fflate";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import type { SopSource } from "../../../src/domain/sop.js";
 import { blockText, type SopBlock, type SopRun } from "../../../src/domain/sop-content.js";
+import type { LlmPart } from "../llm/provider.js";
 import { redactForLlm } from "../redaction/redact.js";
 
-export type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
-export interface PreparedDocument { source: SopSource; parts: GeminiPart[]; blocks?: SopBlock[] }
+export interface PreparedDocument { source: SopSource; parts: LlmPart[]; blocks?: SopBlock[] }
 
 export class SopInputError extends Error {}
 const MAX_EXPANDED = 32 * 1024 * 1024;
@@ -256,7 +256,7 @@ export async function prepareDocument(file: File, id: string): Promise<PreparedD
   const kind = file.name.split(".").pop()?.toLowerCase() as "pdf" | "docx" | "xlsx";
   const bytes = new Uint8Array(await file.arrayBuffer());
   const source: SopSource = { id, name: file.name, kind, warnings: [] };
-  const parts: GeminiPart[] = [{ text: `Source ${id}: ${file.name}` }];
+  const parts: LlmPart[] = [{ text: `Source ${id}: ${file.name}` }];
   if (kind === "pdf") {
     if (decoder.decode(bytes.subarray(0, 5)) !== "%PDF-") throw new SopInputError(`${file.name} is not a valid PDF.`);
     if (/\/Encrypt\b/.test(decoder.decode(bytes))) throw new SopInputError(`${file.name} is encrypted. Upload an unlocked copy.`);

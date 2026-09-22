@@ -2,9 +2,10 @@ import { z } from "zod";
 import { SOP_LIMITS, sopFileError, type SopResult } from "../../../src/domain/sop.js";
 import { type SopBlock, type SopContent } from "../../../src/domain/sop-content.js";
 import { faithfulPrompt, faithfulResponseSchema, validateFaithfulResponse } from "./faithful-ai.js";
-import { geminiKey, type IntegrationEnvironment } from "../config/integration-status.js";
+import { llmConfigured, llmModel, llmProvider, type IntegrationEnvironment } from "../config/integration-status.js";
+import { LlmProviderError, requestLlmJson, type LlmPart } from "../llm/provider.js";
 import { redactForLlm } from "../redaction/redact.js";
-import { prepareDocument, SopInputError, type GeminiPart } from "./documents.js";
+import { prepareDocument, SopInputError } from "./documents.js";
 
 export interface SopEnvironment extends IntegrationEnvironment { APP_ORIGIN?: string; LLM_MODEL?: string }
 export const SOP_PROVIDER_TIMEOUT_MS = 180_000;
@@ -78,7 +79,7 @@ export async function generateSop(
 ): Promise<SopResult> {
   timings.phase = "extraction";
   const extractionStarted = performance.now();
-  const parts: GeminiPart[] = [];
+  const parts: LlmPart[] = [];
   const sources: SopResult["sources"] = [];
   const blocks: SopBlock[] = [];
   let preparedSize = 0;
@@ -101,11 +102,15 @@ export async function generateSop(
     content, sources, teamId, generatedAt: new Date().toISOString(),
   };
   timings.extractionMs = Math.round(performance.now() - extractionStarted);
-  if (!geminiKey(env)) throw new SopProviderError("Gemini must be configured to parse SOP documents.", 503);
+  if (!llmConfigured(env)) throw new SopProviderError("An AI provider must be configured to parse SOP documents.", 503);
   parts.push({ text: `PDF source IDs to transcribe: ${pdfIds.join(", ") || "none"}. Clarity edits requested: ${suggestEdits ? "yes" : "no"}. Return suggestions separately; do not rewrite Office content.` });
+  // Office text is sent for source-aware validation and optional edits. The
+  // current schema never consumes Office screenshots, so sending those large
+  // image payloads only makes CPU-hosted vision models time out.
+  const providerParts = pdfIds.length ? parts : parts.filter((part) => "text" in part);
   let ai: unknown;
   try {
-    ai = await requestFaithfulAi(parts, env, signal, timings);
+    ai = await requestFaithfulAi(providerParts, env, signal, timings);
   } catch (cause) {
     if (pdfIds.length || suggestEdits || signal?.aborted) throw cause;
     content.limitations.push(cause instanceof SopProviderError ? cause.message : "AI suggestions could not be read.", "The original content was imported unchanged. You can retry optional AI edits later.");
@@ -129,54 +134,45 @@ export async function generateSop(
   return result;
 }
 
-async function requestFaithfulAi(parts: GeminiPart[], env: SopEnvironment, signal: AbortSignal | undefined, timings: SopTimings): Promise<unknown> {
+async function requestFaithfulAi(parts: LlmPart[], env: SopEnvironment, signal: AbortSignal | undefined, timings: SopTimings): Promise<unknown> {
   timings.phase = "provider";
   const providerStarted = performance.now();
-  const model = env.LLM_MODEL?.trim() || "gemini-2.5-flash";
+  const provider = llmProvider(env);
+  const providerName = provider === "ollama" ? "Ollama" : "Gemini";
   const deadline = AbortSignal.timeout(SOP_PROVIDER_TIMEOUT_MS);
   const providerSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-  let payload: { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }> };
   try {
-  const send = () => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": geminiKey(env)! },
-    signal: providerSignal,
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: faithfulPrompt }] },
-      contents: [{ role: "user", parts }],
-      generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseJsonSchema: faithfulResponseSchema, maxOutputTokens: 12000,
-        // Flash defaults to dynamic thinking; bound reasoning time without cutting off the SOP output.
-        ...(model === "gemini-2.5-flash" ? { thinkingConfig: { thinkingBudget: 1024 } } : {}),
-      },
-    }),
-  });
-  timings.providerAttempts = 1;
-  let response = await send();
-  if ([500, 502, 503].includes(response.status)) {
-    // Retry only an explicit rejected response, not ambiguous network failures or timeouts.
-    // Both attempts share the same overall deadline and cancellation signal.
-    timings.providerStatus = response.status;
-    await response.body?.cancel();
-    await retryDelay(providerSignal);
-    timings.providerAttempts = 2;
-    response = await send();
-  }
-  timings.providerStatus = response.status;
-  if (response.status === 401 || response.status === 403) throw new SopProviderError("Gemini rejected the local API credentials. Update GEMINI_AI_API in .dev.vars, restart the local app, and try again.", 503);
-  if (response.status === 429) throw new SopProviderError("Gemini's quota or rate limit was reached. Check the provider account or wait before trying again.", 503);
-  if ([500, 502, 503].includes(response.status)) throw new SopProviderError("Gemini is temporarily unavailable or busy. Your document was read successfully. Wait a moment, then try again.", 503);
-  if (response.status === 504) throw new SopProviderError("Gemini timed out while generating the draft. Your document was read successfully. Please try again.", 504);
-  if (!response.ok) throw new SopProviderError("Gemini could not process these documents. Try smaller files or export Office documents to PDF.", 502);
-  payload = await response.json() as typeof payload;
+    const send = () => requestLlmJson({ env, systemPrompt: faithfulPrompt, parts, schema: faithfulResponseSchema, signal: providerSignal, maxOutputTokens: 12000 });
+    timings.providerAttempts = 1;
+    try {
+      const result = await send();
+      timings.providerStatus = 200;
+      return result;
+    } catch (cause) {
+      if (!(cause instanceof LlmProviderError) || !cause.retryable) throw cause;
+      timings.providerStatus = cause.status;
+      await retryDelay(providerSignal);
+      timings.providerAttempts = 2;
+      const result = await send();
+      timings.providerStatus = 200;
+      return result;
+    }
   } catch (cause) {
     if (signal?.aborted) throw new SopProviderError("SOP generation was canceled. Your documents and notes are unchanged.", 499);
-    if (deadline.aborted || (cause instanceof Error && cause.name === "TimeoutError")) throw new SopProviderError("Gemini did not finish within 3 minutes. Your document was read successfully, but no draft was returned. Please try again.", 504);
+    if (deadline.aborted || (cause instanceof Error && cause.name === "TimeoutError")) throw new SopProviderError(`${providerName} did not finish within 3 minutes. Your document was read successfully, but no draft was returned. Please try again.`, 504);
     if (cause instanceof SopProviderError) throw cause;
-    throw new SopProviderError("The connection to Gemini was interrupted while waiting for the draft. Your document was read successfully. Please try again.", 502);
+    if (cause instanceof LlmProviderError) {
+      timings.providerStatus = cause.status;
+      if (cause.message.includes("incomplete response")) throw new SopProviderError("Incomplete transcription", 502);
+      if (cause.status === 415) throw new SopProviderError(cause.message, 400);
+      if (cause.status === 401 || cause.status === 403) throw new SopProviderError(`${providerName} rejected the configured credentials. Update the local LLM settings, restart the app, and try again.`, 503);
+      if (cause.status === 429) throw new SopProviderError(`${providerName}'s quota or rate limit was reached. Check the provider account or wait before trying again.`, 503);
+      if ([500, 502, 503].includes(cause.status)) throw new SopProviderError(`${providerName} is temporarily unavailable or busy. Your document was read successfully. Wait a moment, then try again.`, 503);
+      if (cause.status === 504) throw new SopProviderError(`${providerName} timed out while generating the draft. Your document was read successfully. Please try again.`, 504);
+      throw new SopProviderError(`${providerName} could not process these documents. Try smaller files or a different model.`, 502);
+    }
+    throw new SopProviderError(`The connection to ${providerName} was interrupted while waiting for the draft. Your document was read successfully. Please try again.`, 502);
   } finally { timings.providerMs = Math.round(performance.now() - providerStarted); }
-  const candidate = payload.candidates?.[0];
-  if (candidate?.finishReason !== "STOP") throw new Error("Incomplete transcription");
-  const output = candidate.content?.parts?.filter((part) => !(part as { thought?: boolean }).thought).map((part) => part.text || "").join("");
-  return JSON.parse(output || "");
 }
 
 export async function handleSopRequest(
@@ -190,8 +186,8 @@ export async function handleSopRequest(
   if (!session?.appUserId) return error("Sign in again to create an SOP.", 401);
   const teams = session.accountStatus === "active" ? session.teamRoles?.filter(({ role }) => role === "admin" || role === "moderator") || [] : [];
   if (!teams.length) return error("An active Moderator or Admin role is required.", 403);
-  const apiKey = geminiKey(env);
-  if (request.method === "GET") return json({ available: Boolean(apiKey), aiAvailable: Boolean(apiKey), teams, providerTimeoutSeconds: SOP_PROVIDER_TIMEOUT_MS / 1000, message: apiKey ? "Ready for local testing with non-sensitive sample documents." : "Configure Gemini before uploading SOP documents." });
+  const aiAvailable = llmConfigured(env);
+  if (request.method === "GET") return json({ available: aiAvailable, aiAvailable, teams, provider: llmProvider(env), model: llmModel(env), providerTimeoutSeconds: SOP_PROVIDER_TIMEOUT_MS / 1000, message: aiAvailable ? "Ready for local testing with non-sensitive sample documents." : "Configure an AI provider before uploading SOP documents." });
   if (running.has(session.appUserId)) return error("An SOP is already being generated for your account. Wait for it to finish before retrying.", 429);
   running.add(session.appUserId);
   const requestId = crypto.randomUUID();
