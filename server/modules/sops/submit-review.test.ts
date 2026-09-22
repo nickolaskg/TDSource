@@ -37,6 +37,7 @@ describe("SOP review submission validation", () => {
       limitations: [],
     });
     expect(JSON.stringify(submission.sourceContent)).not.toContain('"src"');
+    expect(submission.imageAssets).toEqual([{ blockId: "D1-B1", mimeType: "image/png", data: "A".repeat(64_000) }]);
   });
 
   it("preserves source formatting while removing image bytes", () => {
@@ -61,6 +62,7 @@ describe("SOP review submission validation", () => {
       { id: "D1-B4", sourceId: "D1", type: "image", alt: "Quote screen", src: undefined },
     ]);
     expect(JSON.stringify(submission.sourceContent)).not.toContain("data:image");
+    expect(submission.imageAssets).toEqual([{ blockId: "D1-B4", mimeType: "image/png", data: "AAAA" }]);
   });
 
   it("builds review steps from an imported document when the draft has content blocks only", () => {

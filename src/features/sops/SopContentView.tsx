@@ -12,13 +12,17 @@ function Runs({ runs = [] }: { runs?: SopRun[] }) {
   });
 }
 
+function safeImageSource(src?: string): string | undefined {
+  return src && (/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(src) || /^\/api\/sop-assets\/[0-9a-f-]+\/[0-9a-f-]+\/[^/]+$/i.test(src)) ? src : undefined;
+}
+
 function Block({ block }: { block: SopBlock }) {
   if (block.type === "heading") {
     const Heading = `h${Math.max(2, Math.min(6, block.level || 2))}` as "h2" | "h3" | "h4" | "h5" | "h6";
     return <Heading id={`sop-block-${block.id}`}>{block.marker && `${block.marker} `}<Runs runs={block.runs} /></Heading>;
   }
   if (block.type === "table") return <div className="sop-table-scroll" tabIndex={0} role="region" aria-label={`Table from ${block.sourceId}`}><table><tbody>{block.rows?.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}><Runs runs={cell} /></td>)}</tr>)}</tbody></table></div>;
-  if (block.type === "image") return <figure>{block.src && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(block.src) ? <img src={block.src} alt={block.alt || `Image from ${block.sourceId}`} /> : <p>Image unavailable. Check the original document.</p>}{block.alt && <figcaption>{block.alt}</figcaption>}</figure>;
+  if (block.type === "image") { const src = safeImageSource(block.src); return <figure>{src ? <img src={src} alt={block.alt || `Image from ${block.sourceId}`} /> : <p>Image unavailable. Check the original document.</p>}{block.alt && <figcaption>{block.alt}</figcaption>}</figure>; }
   return <p id={`sop-block-${block.id}`}><Runs runs={block.runs} /></p>;
 }
 

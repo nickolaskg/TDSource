@@ -44,6 +44,7 @@ export interface ValidatedSopSubmission {
   sourceSpaceProviderId: string;
   sourceMarkdown: string;
   sourceContent?: SopContent;
+  imageAssets: Array<{ blockId: string; mimeType: "image/png" | "image/jpeg" | "image/webp"; data: string }>;
 }
 
 /** Convert the editor's structured steps to the text array used by the review/library schema. */
@@ -68,6 +69,10 @@ export function validateSopSubmission(value: unknown): ValidatedSopSubmission {
   const draft = { ...parsed.draft, steps };
   const result: SopResult = { ...parsed, draft, content: parsed.content ? stripBinary(parsed.content) : undefined };
   const uploadId = crypto.randomUUID();
+  const imageAssets = (parsed.content?.blocks || []).flatMap((block) => {
+    const match = block.src?.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+=*)$/);
+    return match ? [{ blockId: block.id, mimeType: match[1] as "image/png" | "image/jpeg" | "image/webp", data: match[2] }] : [];
+  });
   return {
     teamId: parsed.teamId,
     generatedAt: parsed.generatedAt,
@@ -77,5 +82,6 @@ export function validateSopSubmission(value: unknown): ValidatedSopSubmission {
     sourceSpaceProviderId: `upload:${uploadId}`,
     sourceMarkdown: sopMarkdown(result),
     sourceContent: result.content,
+    imageAssets,
   };
 }

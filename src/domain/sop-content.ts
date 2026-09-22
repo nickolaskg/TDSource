@@ -1,7 +1,7 @@
 export interface SopRun { text: string; bold?: boolean; italic?: boolean; underline?: boolean }
 export interface SopBlock {
   id: string; sourceId: string; type: "heading" | "paragraph" | "list-item" | "table" | "image";
-  runs?: SopRun[]; level?: number; ordered?: boolean; marker?: string; rows?: SopRun[][][]; src?: string; alt?: string;
+  runs?: SopRun[]; level?: number; ordered?: boolean; marker?: string; rows?: SopRun[][][]; src?: string; assetKey?: string; alt?: string;
 }
 export interface SopSuggestion { blockId: string; original: string; replacement: string; reason: string }
 export interface SopContent { blocks: SopBlock[]; suggestions: SopSuggestion[]; limitations: string[] }

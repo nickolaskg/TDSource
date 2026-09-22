@@ -1627,10 +1627,38 @@ export function defaultReviewOrganizationWide(storedOrganizationWide: boolean, h
   return hasPublishedVersion ? storedOrganizationWide : true;
 }
 
+const SOP_ASSET_BUCKET = "sop-assets";
+
+async function storageRequest(env: Env, key: string, init: RequestInit = {}): Promise<Response> {
+  const baseUrl = env.SUPABASE_URL?.trim().replace(/\/$/, "");
+  const secret = supabaseSecret(env);
+  if (!baseUrl || !secret) throw new Error("Supabase is not configured");
+  const headers = new Headers(init.headers);
+  headers.set("apikey", secret);
+  headers.set("authorization", `Bearer ${secret}`);
+  return fetch(`${baseUrl}/storage/v1/object/${SOP_ASSET_BUCKET}/${key.split("/").map(encodeURIComponent).join("/")}`, { ...init, headers });
+}
+
+async function uploadSopAsset(env: Env, key: string, mimeType: string, data: string): Promise<void> {
+  const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
+  const valid = bytes.length <= 4 * 1024 * 1024 && (
+    (mimeType === "image/png" && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value))
+    || (mimeType === "image/jpeg" && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255)
+    || (mimeType === "image/webp" && new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF" && new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP")
+  );
+  if (!valid) throw new Error("SOP asset signature was invalid");
+  const response = await storageRequest(env, key, { method: "POST", headers: { "content-type": mimeType, "x-upsert": "false" }, body: bytes });
+  if (!response.ok) throw new Error(`SOP asset upload failed with status ${response.status}`);
+}
+
+async function removeSopAssets(env: Env, keys: string[]): Promise<void> {
+  await Promise.all(keys.map((key) => storageRequest(env, key, { method: "DELETE" }).catch(() => undefined)));
+}
+
 type SourceRun = { text: string; bold?: boolean; italic?: boolean; underline?: boolean };
 type SourceBlock = {
   id: string; sourceId: string; type: "heading" | "paragraph" | "list-item" | "table" | "image";
-  runs?: SourceRun[]; level?: number; ordered?: boolean; marker?: string; rows?: SourceRun[][][]; alt?: string;
+  runs?: SourceRun[]; level?: number; ordered?: boolean; marker?: string; rows?: SourceRun[][][]; src?: string; assetKey?: string; alt?: string;
 };
 export interface StoredSourceContent { blocks: SourceBlock[]; suggestions: []; limitations: string[] }
 
@@ -1661,6 +1689,7 @@ export function sourceContentFromEvidenceMap(value: unknown): StoredSourceConten
     if (block.ordered !== undefined && typeof block.ordered !== "boolean") return null;
     if (block.marker !== undefined && (typeof block.marker !== "string" || block.marker.length > 20)) return null;
     if (block.alt !== undefined && (typeof block.alt !== "string" || block.alt.length > 1000)) return null;
+    if (block.assetKey !== undefined && (typeof block.assetKey !== "string" || !/^[a-zA-Z0-9/_-]+\.(png|jpg|webp)$/.test(block.assetKey) || block.assetKey.length > 500)) return null;
     const clean: SourceBlock = {
       id: block.id,
       sourceId: block.sourceId,
@@ -1672,9 +1701,34 @@ export function sourceContentFromEvidenceMap(value: unknown): StoredSourceConten
     if (typeof block.ordered === "boolean") clean.ordered = block.ordered;
     if (typeof block.marker === "string") clean.marker = block.marker;
     if (typeof block.alt === "string") clean.alt = block.alt;
+    if (typeof block.assetKey === "string") clean.assetKey = block.assetKey;
     blocks.push(clean);
   }
   return { blocks, suggestions: [], limitations: record.limitations as string[] };
+}
+
+function sourceContentForClient(documentId: string, versionId: string, content: StoredSourceContent | null): StoredSourceContent | null {
+  if (!content) return null;
+  return { ...content, blocks: content.blocks.map(({ assetKey, ...block }) => ({ ...block, ...(assetKey ? { src: `/api/sop-assets/${encodeURIComponent(documentId)}/${encodeURIComponent(versionId)}/${encodeURIComponent(block.id)}` } : {}) })) as SourceBlock[] };
+}
+
+async function getSopAsset(request: Request, env: Env, documentId: string, versionId: string, blockId: string): Promise<Response> {
+  const session = await readSession(request, env);
+  if (!session?.appUserId) return json({ code: "UNAUTHENTICATED" }, 401);
+  const [readIds, reviewIds] = await Promise.all([authorizedDocumentIds(env, session), authorizedDocumentIds(env, session, "review")]);
+  if (!readIds.includes(documentId) && !reviewIds.includes(documentId)) return json({ code: "NOT_FOUND" }, 404);
+  if (!reviewIds.includes(documentId)) {
+    const documents = await supabaseRequest<Array<{ current_published_version_id: string | null }>>(env, `documents?id=eq.${documentId}&select=current_published_version_id&limit=1`);
+    if (documents[0]?.current_published_version_id !== versionId) return json({ code: "NOT_FOUND" }, 404);
+  }
+  const versions = await supabaseRequest<Array<{ evidence_map: unknown }>>(env, `document_versions?id=eq.${versionId}&document_id=eq.${documentId}&select=evidence_map&limit=1`);
+  const content = sourceContentFromEvidenceMap(versions[0]?.evidence_map);
+  const assetKey = content?.blocks.find((block) => block.id === blockId && block.type === "image")?.assetKey;
+  if (!assetKey) return json({ code: "NOT_FOUND" }, 404);
+  const asset = await storageRequest(env, assetKey);
+  if (!asset.ok || !asset.body) return json({ code: "NOT_FOUND" }, 404);
+  const contentType = assetKey.endsWith(".png") ? "image/png" : assetKey.endsWith(".webp") ? "image/webp" : "image/jpeg";
+  return new Response(asset.body, { headers: { "cache-control": "private, max-age=300", "content-type": contentType, "x-content-type-options": "nosniff" } });
 }
 
 export function sourceContentText(content: StoredSourceContent | null): string {
@@ -1814,7 +1868,7 @@ async function getReviewDetail(request: Request, env: Env, documentId: string): 
   return json({
     id: documentId,
     draft: version,
-    sourceContent: sourceContentFromEvidenceMap(version.evidence_map),
+    sourceContent: sourceContentForClient(documentId, version.id, sourceContentFromEvidenceMap(version.evidence_map)),
     sourceMessages: messages,
     organizationWide: document
       ? defaultReviewOrganizationWide(document.organization_wide, Boolean(document.current_published_version_id))
@@ -1996,7 +2050,7 @@ async function getLibraryDetail(request: Request, env: Env, documentId: string):
   return json({ id: document.id, label: document.knowledge_label, sourceSpace: spaces[0]?.display_name || "Webex space", updatedAt: document.updated_at, transcriptVisible, canManage, canManageVisibility, organizationWide: document.organization_wide,
     originallyApprovedBy: attributionUsers.find(({ id }) => id === document.originally_approved_by_user_id)?.display_name || null,
     lastUpdatedBy: attributionUsers.find(({ id }) => id === document.last_updated_by_user_id)?.display_name || null,
-    draft: version, sourceContent: sourceContentFromEvidenceMap(version.evidence_map), sourceMessages });
+    draft: version, sourceContent: sourceContentForClient(documentId, version.id, sourceContentFromEvidenceMap(version.evidence_map)), sourceMessages });
 }
 
 async function revisePublishedDocument(request: Request, env: Env, documentId: string): Promise<Response> {
@@ -2117,7 +2171,19 @@ async function submitSopReview(request: Request, env: Env): Promise<Response> {
   }
   const organizationId = session.organizationId;
   if (!organizationId) return json({ code: "ACCOUNT_NOT_FOUND", message: "The TDS account could not be resolved." }, 403);
+  const assetKeys: string[] = [];
   try {
+    const assetKeyByBlock = new Map<string, string>();
+    const assetGroup = crypto.randomUUID();
+    for (const asset of submission.imageAssets) {
+      const extension = asset.mimeType === "image/png" ? "png" : asset.mimeType === "image/webp" ? "webp" : "jpg";
+      const safeBlockId = asset.blockId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const key = `${organizationId}/${assetGroup}/${safeBlockId}.${extension}`;
+      await uploadSopAsset(env, key, asset.mimeType, asset.data);
+      assetKeys.push(key);
+      assetKeyByBlock.set(asset.blockId, key);
+    }
+    const sourceContent = submission.sourceContent ? { ...submission.sourceContent, blocks: submission.sourceContent.blocks.map((block) => ({ ...block, assetKey: assetKeyByBlock.get(block.id) })) } : undefined;
     const result = await supabaseRequest<{ documentId: string; versionId: string; status: string }>(env, "rpc/submit_sop_review", {
       method: "POST",
       body: JSON.stringify({
@@ -2128,7 +2194,7 @@ async function submitSopReview(request: Request, env: Env): Promise<Response> {
         p_source_provider_id: submission.sourceProviderId,
         p_source_name: `SOP upload: ${submission.draft.title}`,
         p_source_markdown: submission.sourceMarkdown,
-        p_source_content: submission.sourceContent,
+        p_source_content: sourceContent,
         p_generated_at: submission.generatedAt,
         p_title: submission.draft.title,
         p_problem: submission.draft.summary,
@@ -2139,6 +2205,7 @@ async function submitSopReview(request: Request, env: Env): Promise<Response> {
     });
     return json(result, 201);
   } catch (error) {
+    await removeSopAssets(env, assetKeys);
     console.error("SOP review submission failed", error instanceof Error ? error.message : "Unknown error");
     if (error instanceof Error && error.message.includes("status 404")) {
       return json({ code: "DATABASE_MIGRATION_REQUIRED", message: "SOP review storage is not installed in this Supabase project. Apply migrations 202609210018 and 202609210019, then submit this draft again." }, 503);
@@ -2185,6 +2252,8 @@ async function handleApi(request: Request, env: Env, waitUntil: (promise: Promis
   if (request.method === "GET" && pathname === "/api/processing-issues") return getProcessingIssues(request, env);
   if (request.method === "GET" && pathname === "/api/library") return getLibrary(request, env);
   if (request.method === "POST" && pathname === "/api/knowledge-chat") return chatKnowledge(request, env);
+  const sopAssetMatch = pathname.match(/^\/api\/sop-assets\/([0-9a-f-]+)\/([0-9a-f-]+)\/([^/]+)$/i);
+  if (request.method === "GET" && sopAssetMatch) return getSopAsset(request, env, sopAssetMatch[1], sopAssetMatch[2], decodeURIComponent(sopAssetMatch[3]));
   const reviewMatch = pathname.match(/^\/api\/reviews\/([0-9a-f-]+)$/i);
   if (request.method === "GET" && reviewMatch) return getReviewDetail(request, env, reviewMatch[1]);
   if (request.method === "PATCH" && reviewMatch) return reviseReviewDraft(request, env, reviewMatch[1]);

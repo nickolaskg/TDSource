@@ -33,6 +33,10 @@ describe("faithful SOP review", () => {
       expect(html).toContain("Image unavailable"); expect(html).not.toContain("<img");
     }
   });
+  it("renders authenticated same-origin SOP assets", () => {
+    const html = renderToStaticMarkup(createElement(ContentBlocks, { blocks: [{ id: "D1-B1", sourceId: "D1", type: "image", src: "/api/sop-assets/95fcd471-88e4-46ca-9b2a-e8c6c423704b/85fcd471-88e4-46ca-9b2a-e8c6c423704a/D1-B1", alt: "Quote screen" }] }));
+    expect(html).toContain('<img src="/api/sop-assets/'); expect(html).toContain('alt="Quote screen"');
+  });
   it("keeps suggested wording separate until accepted, and rejects without changing any blocks", () => {
     const html = renderToStaticMarkup(createElement(SopContentView, { content, onChange: () => {} }));
     expect(html).toContain('Before:'); expect(html).toContain('After:'); expect(html).toContain('Capitalization.');

@@ -27,6 +27,11 @@ describe("source-faithful presentation", () => {
     expect(sourceContentFromEvidenceMap({ source: "local_sop_upload", source_content: { ...content, untrusted: "not returned" } })).toEqual({ ...content, suggestions: [] });
   });
 
+  it("accepts only bounded private asset keys", () => {
+    expect(sourceContentFromEvidenceMap({ source_content: { ...content, blocks: [{ ...content.blocks[0], type: "image", assetKey: "org/upload/D1-B1.png" }] } })?.blocks[0]).toMatchObject({ assetKey: "org/upload/D1-B1.png" });
+    expect(sourceContentFromEvidenceMap({ source_content: { ...content, blocks: [{ ...content.blocks[0], type: "image", assetKey: "../secret.png" }] } })).toBeNull();
+  });
+
   it("omits malformed or binary presentation content", () => {
     expect(sourceContentFromEvidenceMap({ source_content: { ...content, blocks: [{ ...content.blocks[0], src: "data:image/png;base64,AAAA" }] } })).toBeNull();
     expect(sourceContentFromEvidenceMap({ source_content: { blocks: "invalid", limitations: [] } })).toBeNull();
