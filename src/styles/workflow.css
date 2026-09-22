@@ -284,3 +284,7 @@
     animation-duration: .01ms !important;
   }
 }
+.sop-content-editor { display: grid; gap: var(--space-4); }
+.sop-content-editor-block { display: grid; gap: var(--space-2); }
+.sop-content-editor-block > span { font-size: .75rem; font-weight: 700; text-transform: uppercase; }
+.sop-content-editor-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: var(--space-2); }

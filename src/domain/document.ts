@@ -20,6 +20,7 @@ export interface KnowledgeDocumentSummary {
   categories: string[];
   updatedAt: string;
   transcriptVisible: boolean;
+  isSop?: boolean;
 }
 
 export interface ReviewItem {

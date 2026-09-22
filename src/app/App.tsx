@@ -102,7 +102,7 @@ export function App() {
         <Route path="sops" element={canReview ? <SopPage /> : <Navigate to="/library" replace />} />
         <Route path="favorites" element={<LibraryPage favoritesOnly />} />
         <Route path="people" element={isAdmin ? <Navigate to="/settings?section=members" replace /> : <Navigate to="/library" replace />} />
-        <Route path="settings" element={isAdmin ? <SettingsPage /> : <Navigate to="/library" replace />} />
+        <Route path="settings" element={isAdmin ? <SettingsPage userEmail={user.email} /> : <Navigate to="/library" replace />} />
         <Route path="help" element={<AdminSetupPage section="help" />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

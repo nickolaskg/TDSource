@@ -95,6 +95,11 @@ interface ResolvedSession {
 type AccountStatus = "inactive" | "active" | "suspended";
 type TeamRole = "basic" | "moderator" | "admin";
 type AdminSetupInvitationStatus = "pending" | "setup_started" | "completed" | "expired" | "revoked";
+const INTEGRATIONS_DEVELOPER_EMAIL = "nickolas.gettel@tdsynnex.com";
+
+export function canAccessIntegrationSettings(email: string | undefined): boolean {
+  return email?.trim().toLowerCase() === INTEGRATIONS_DEVELOPER_EMAIL;
+}
 
 interface TeamGrant {
   teamId: string;
@@ -1216,7 +1221,7 @@ async function receiveWebexWebhook(request: Request, env: Env, waitUntil: (promi
 async function configureWebexWebhook(request: Request, env: Env): Promise<Response> {
   if (!isSameOrigin(request, env)) return json({ code: "INVALID_ORIGIN" }, 403);
   const session = await readSession(request, env);
-  if (!session?.teamRoles?.some(({ role }) => role === "admin")) return json({ code: "ADMIN_REQUIRED" }, 403);
+  if (!session?.teamRoles?.some(({ role }) => role === "admin") || !canAccessIntegrationSettings(session.email)) return json({ code: "NOT_FOUND" }, 404);
   if (!env.WEBEX_BOT_ACCESS_TOKEN || !env.WEBEX_WEBHOOK_SECRET || !llmConfigured(env)) {
     return json({ code: "PIPELINE_NOT_CONFIGURED", message: "Bot, webhook, and AI provider settings are required." }, 503);
   }
@@ -1251,7 +1256,7 @@ async function configureWebexWebhook(request: Request, env: Env): Promise<Respon
 
 async function getIntegrationSettings(request: Request, env: Env): Promise<Response> {
   const session = await readSession(request, env);
-  if (!session?.organizationId || !session.teamRoles?.some(({ role }) => role === "admin")) return json({ code: "ADMIN_REQUIRED" }, 403);
+  if (!session?.organizationId || !session.teamRoles?.some(({ role }) => role === "admin") || !canAccessIntegrationSettings(session.email)) return json({ code: "NOT_FOUND" }, 404);
   const identities = await supabaseRequest<Array<{ webhook_id: string | null; enabled: boolean }>>(env,
     `webex_capture_identities?organization_id=eq.${session.organizationId}&select=webhook_id,enabled&limit=1`);
   const identity = identities[0];
@@ -1899,8 +1904,12 @@ async function reviseReviewDraft(request: Request, env: Env, documentId: string)
   const title = cleanDraftText(body.title, 240); const problem = cleanDraftText(body.problem, 4000); const summary = cleanDraftText(body.summary, 8000);
   const steps = cleanDraftList(body.steps, 30, 2000); const warnings = cleanDraftList(body.warnings, 20, 2000);
   if (!title || !problem || !summary || !steps || !warnings) return json({ code: "INVALID_DRAFT", message: "Complete the title, problem, summary, and valid action fields." }, 400);
+  const versions = await supabaseRequest<Array<{ evidence_map: unknown }>>(env, `document_versions?document_id=eq.${documentId}&select=evidence_map&order=version_number.desc&limit=1`);
+  const existingSourceContent = sourceContentFromEvidenceMap(versions[0]?.evidence_map);
+  const sourceContent = mergeSourceContentEdit(existingSourceContent, body.sourceContent);
+  if ((existingSourceContent && !sourceContent) || (!existingSourceContent && body.sourceContent != null)) return json({ code: "INVALID_SOURCE_CONTENT", message: "The SOP structure or stored assets cannot be changed." }, 400);
   const versionId = await supabaseRequest<string>(env, "rpc/revise_document_draft", {
-    method: "POST", body: JSON.stringify({ p_document_id: documentId, p_user_id: session.appUserId, p_title: title, p_problem: problem, p_summary: summary, p_steps: steps, p_warnings: warnings }),
+    method: "POST", body: JSON.stringify({ p_document_id: documentId, p_user_id: session.appUserId, p_title: title, p_problem: problem, p_summary: summary, p_steps: steps, p_warnings: warnings, p_source_content: sourceContent }),
   });
   return json({ ok: true, versionId });
 }
@@ -1931,7 +1940,10 @@ async function getKnowledgeFlags(request: Request, env: Env): Promise<Response> 
     const versionIds = documents.map((document) => document.current_published_version_id).filter(Boolean);
     const versions = versionIds.length ? await supabaseRequest<Array<{ id: string; title: string }>>(env, `document_versions?id=${inFilter(versionIds)}&select=id,title`) : [];
     return json({ items: flags.filter((flag) => documents.some((document) => document.id === flag.document_id)).map((flag) => ({ ...flag, title: versions.find((version) => version.id === documents.find((document) => document.id === flag.document_id)?.current_published_version_id)?.title || "Published document" })) });
-  } catch { return json({ message: "Knowledge lifecycle controls are unavailable until the database migration is installed." }, 503); }
+  } catch (error) {
+    console.error("Knowledge lifecycle queue unavailable", error);
+    return json({ code: "LIFECYCLE_UNAVAILABLE" }, 503);
+  }
 }
 async function knowledgeLifecycle(request: Request, env: Env, documentId: string): Promise<Response> {
   if (request.method !== "GET" && !isSameOrigin(request, env)) return json({ code: "INVALID_ORIGIN" }, 403);
@@ -1950,7 +1962,10 @@ async function knowledgeLifecycle(request: Request, env: Env, documentId: string
     const replacementId = documents[0].replacement_document_id;
     const replacements = replacementId && readIds.includes(replacementId) ? await supabaseRequest<Array<{ id: string }>>(env, `documents?id=eq.${replacementId}&workflow_state=eq.published&knowledge_label=in.(verified,unresolved)&select=id`) : [];
     return json({ reason: documents[0].lifecycle_reason, changedAt: documents[0].lifecycle_changed_at, replacementId: replacements[0]?.id || null, flags });
-  } catch { return json({ message: "Knowledge lifecycle controls are unavailable until the database migration is installed." }, 503); }
+  } catch (error) {
+    console.error("Knowledge lifecycle unavailable", documentId, error);
+    return json({ code: "LIFECYCLE_UNAVAILABLE" }, 503);
+  }
 }
 
 async function getLibrary(request: Request, env: Env): Promise<Response> {
@@ -1963,15 +1978,16 @@ async function getLibrary(request: Request, env: Env): Promise<Response> {
   if (documents.length === 0) return json({ items: [], favoriteIds: [] });
   const attributionIds = [...new Set(documents.flatMap(({ originally_approved_by_user_id, last_updated_by_user_id }) => [originally_approved_by_user_id, last_updated_by_user_id]).filter((id): id is string => Boolean(id)))];
   const [versions, spaces, favorites, attributionUsers] = await Promise.all([
-    supabaseRequest<Array<{ id: string; title: string; summary: string }>>(env, `document_versions?id=${inFilter(documents.map(({ current_published_version_id }) => current_published_version_id))}&select=id,title,summary`),
+    supabaseRequest<Array<{ id: string; title: string; summary: string; evidence_map: unknown }>>(env, `document_versions?id=${inFilter(documents.map(({ current_published_version_id }) => current_published_version_id))}&select=id,title,summary,evidence_map`),
     supabaseRequest<Array<{ id: string; display_name: string }>>(env, `source_spaces?id=${inFilter([...new Set(documents.map(({ source_space_id }) => source_space_id))])}&select=id,display_name`),
     supabaseRequest<Array<{ document_id: string }>>(env, `favorites?user_id=eq.${session.appUserId}&document_id=${inFilter(documents.map(({ id }) => id))}&select=document_id`),
     attributionIds.length ? supabaseRequest<Array<{ id: string; display_name: string }>>(env, `users?id=${inFilter(attributionIds)}&select=id,display_name`) : Promise.resolve([]),
   ]);
   return json({ favoriteIds: favorites.map(({ document_id }) => document_id), items: documents.map((document) => {
     const version = versions.find(({ id }) => id === document.current_published_version_id);
-    return { id: document.id, title: version?.title || "Untitled", summary: version?.summary || "", workflowState: "published", label: document.knowledge_label,
-      sourceSpace: spaces.find(({ id }) => id === document.source_space_id)?.display_name || "Webex space", teamNames: session.teamRoles?.map(({ teamName }) => teamName) || [], categories: [], updatedAt: document.updated_at, transcriptVisible: document.transcript_visible_to_basic, organizationWide: document.organization_wide,
+    const sourceSpace = spaces.find(({ id }) => id === document.source_space_id)?.display_name || "Webex space";
+    return { id: document.id, title: version?.title || "Untitled", summary: version?.summary || "", workflowState: "published", label: document.knowledge_label, isSop: Boolean(sourceContentFromEvidenceMap(version?.evidence_map)) || sourceSpace.startsWith("SOP upload:"),
+      sourceSpace, teamNames: session.teamRoles?.map(({ teamName }) => teamName) || [], categories: [], updatedAt: document.updated_at, transcriptVisible: document.transcript_visible_to_basic, organizationWide: document.organization_wide,
       originallyApprovedBy: attributionUsers.find(({ id }) => id === document.originally_approved_by_user_id)?.display_name || null,
       lastUpdatedBy: attributionUsers.find(({ id }) => id === document.last_updated_by_user_id)?.display_name || null };
   }) });
@@ -2064,10 +2080,14 @@ async function revisePublishedDocument(request: Request, env: Env, documentId: s
   const steps = cleanDraftList(body.steps, 30, 2000); const warnings = cleanDraftList(body.warnings, 20, 2000);
   const label = body.label === "verified" || body.label === "unresolved" ? body.label : null;
   if (!title || !problem || !summary || !steps || !warnings || !label) return json({ code: "INVALID_DOCUMENT", message: "Complete the content and choose a supported status." }, 400);
-  const documents = await supabaseRequest<Array<{ knowledge_label: string }>>(env, `documents?id=eq.${documentId}&select=knowledge_label&limit=1`);
+  const documents = await supabaseRequest<Array<{ knowledge_label: string; current_published_version_id: string }>>(env, `documents?id=eq.${documentId}&select=knowledge_label,current_published_version_id&limit=1`);
   if (!isCurrentKnowledge(documents[0]?.knowledge_label)) return json({ message: "Historical guidance cannot be edited back into current knowledge. Publish a reviewed replacement." }, 409);
+  const versions = await supabaseRequest<Array<{ evidence_map: unknown }>>(env, `document_versions?id=eq.${documents[0].current_published_version_id}&select=evidence_map&limit=1`);
+  const existingSourceContent = sourceContentFromEvidenceMap(versions[0]?.evidence_map);
+  const sourceContent = mergeSourceContentEdit(existingSourceContent, body.sourceContent);
+  if ((existingSourceContent && !sourceContent) || (!existingSourceContent && body.sourceContent != null)) return json({ code: "INVALID_SOURCE_CONTENT", message: "The SOP structure or stored assets cannot be changed." }, 400);
   const versionId = await supabaseRequest<string>(env, "rpc/revise_published_document", {
-    method: "POST", body: JSON.stringify({ p_document_id: documentId, p_user_id: session.appUserId, p_title: title, p_problem: problem, p_summary: summary, p_steps: steps, p_warnings: warnings }),
+    method: "POST", body: JSON.stringify({ p_document_id: documentId, p_user_id: session.appUserId, p_title: title, p_problem: problem, p_summary: summary, p_steps: steps, p_warnings: warnings, p_source_content: sourceContent }),
   });
   if (documents[0]?.knowledge_label !== label) {
     await supabaseRequest<void>(env, `documents?id=eq.${documentId}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ knowledge_label: label, updated_at: new Date().toISOString() }) });
@@ -2085,26 +2105,88 @@ async function archivePublishedDocument(request: Request, env: Env, documentId: 
   return json({ ok: true });
 }
 
+export function mergeSourceContentEdit(existing: StoredSourceContent | null, proposed: unknown): StoredSourceContent | null {
+  if (!existing) return proposed === undefined || proposed === null ? null : null;
+  if (!proposed || typeof proposed !== "object" || !Array.isArray((proposed as { blocks?: unknown }).blocks)) return null;
+  const blocks = (proposed as { blocks: unknown[] }).blocks;
+  if (blocks.length !== existing.blocks.length) return null;
+  const merged: SourceBlock[] = [];
+  const sameRunShape = (original: SourceRun, candidate: Record<string, unknown>) => candidate.bold === original.bold && candidate.italic === original.italic && candidate.underline === original.underline;
+  for (let index = 0; index < existing.blocks.length; index++) {
+    const original = existing.blocks[index]; const value = blocks[index];
+    if (!value || typeof value !== "object") return null;
+    const candidate = value as Record<string, unknown>;
+    if (candidate.id !== original.id || candidate.sourceId !== original.sourceId || candidate.type !== original.type
+      || candidate.level !== original.level || candidate.ordered !== original.ordered || candidate.marker !== original.marker
+      || candidate.assetKey !== undefined) return null;
+    const next: SourceBlock = { ...original };
+    if (original.runs) {
+      if (!Array.isArray(candidate.runs) || candidate.runs.length !== original.runs.length) return null;
+      const runs: SourceRun[] = [];
+      for (let runIndex = 0; runIndex < original.runs.length; runIndex++) {
+        const run = candidate.runs[runIndex];
+        if (!run || typeof run !== "object" || !sourceRun(run) || !sameRunShape(original.runs[runIndex], run as Record<string, unknown>)) return null;
+        runs.push({ ...original.runs[runIndex], text: (run as SourceRun).text });
+      }
+      next.runs = runs;
+    } else if (candidate.runs !== undefined) return null;
+    if (original.rows) {
+      if (!Array.isArray(candidate.rows) || candidate.rows.length !== original.rows.length) return null;
+      const rows: SourceRun[][][] = [];
+      for (let rowIndex = 0; rowIndex < original.rows.length; rowIndex++) {
+        const row = candidate.rows[rowIndex]; if (!Array.isArray(row) || row.length !== original.rows[rowIndex].length) return null;
+        const cells: SourceRun[][] = [];
+        for (let cellIndex = 0; cellIndex < original.rows[rowIndex].length; cellIndex++) {
+          const cell = row[cellIndex]; if (!Array.isArray(cell) || cell.length !== original.rows[rowIndex][cellIndex].length) return null;
+          const runs: SourceRun[] = [];
+          for (let runIndex = 0; runIndex < original.rows[rowIndex][cellIndex].length; runIndex++) {
+            const run = cell[runIndex]; const originalRun = original.rows[rowIndex][cellIndex][runIndex];
+            if (!run || typeof run !== "object" || !sourceRun(run) || !sameRunShape(originalRun, run as Record<string, unknown>)) return null;
+            runs.push({ ...originalRun, text: (run as SourceRun).text });
+          }
+          cells.push(runs);
+        }
+        rows.push(cells);
+      }
+      next.rows = rows;
+    } else if (candidate.rows !== undefined) return null;
+    if (original.type === "image") {
+      if (candidate.alt !== undefined && (typeof candidate.alt !== "string" || candidate.alt.length > 1000)) return null;
+      next.alt = typeof candidate.alt === "string" ? candidate.alt : original.alt;
+    } else if (candidate.alt !== original.alt) return null;
+    merged.push(next);
+  }
+  return { blocks: merged, suggestions: [], limitations: [...existing.limitations] };
+}
+
+export function documentAssetKeys(result: { assetKeys?: unknown }): string[] {
+  return Array.isArray(result.assetKeys) ? [...new Set(result.assetKeys.filter((key): key is string => typeof key === "string" && key.length > 0))] : [];
+}
+
 async function permanentlyDeleteDocument(request: Request, env: Env, documentId: string): Promise<Response> {
   if (!isSameOrigin(request, env)) return json({ code: "INVALID_ORIGIN" }, 403);
   const session = await readSession(request, env);
   if (!session?.appUserId) return json({ code: "UNAUTHENTICATED" }, 401);
   if (!(await authorizedDocumentIds(env, session, "revise")).includes(documentId)) return json({ code: "NOT_FOUND" }, 404);
-  await supabaseRequest<{ assetKeys?: string[] }>(env, "rpc/permanently_delete_document", {
-    method: "POST", body: JSON.stringify({ p_document_id: documentId, p_user_id: session.appUserId }),
-  });
-  const pending = await supabaseRequest<Array<{ object_key: string; attempts: number }>>(env, "storage_purge_queue?select=object_key,attempts&order=created_at.asc&limit=100");
-  const failed: string[] = [];
-  for (const { object_key: key, attempts } of pending) {
-    const response = await storageRequest(env, key, { method: "DELETE" }).catch(() => null);
-    if (response && (response.ok || response.status === 404)) {
-      await supabaseRequest<void>(env, `storage_purge_queue?object_key=eq.${encodeURIComponent(key)}`, { method: "DELETE", headers: { prefer: "return=minimal" } });
-    } else {
-      failed.push(key);
-      await supabaseRequest<void>(env, `storage_purge_queue?object_key=eq.${encodeURIComponent(key)}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ attempts: attempts + 1, last_error: "Object deletion failed" }) }).catch(() => undefined);
+  try {
+    const result = await supabaseRequest<{ assetKeys?: string[] }>(env, "rpc/permanently_delete_document", {
+      method: "POST", body: JSON.stringify({ p_document_id: documentId, p_user_id: session.appUserId }),
+    });
+    const failed: string[] = [];
+    for (const key of documentAssetKeys(result || {})) {
+      const response = await storageRequest(env, key, { method: "DELETE" }).catch(() => null);
+      if (response && (response.ok || response.status === 404)) {
+        await supabaseRequest<void>(env, `storage_purge_queue?object_key=eq.${encodeURIComponent(key)}`, { method: "DELETE", headers: { prefer: "return=minimal" } });
+      } else {
+        failed.push(key);
+        await supabaseRequest<void>(env, `storage_purge_queue?object_key=eq.${encodeURIComponent(key)}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ last_error: "Object deletion failed" }) }).catch(() => undefined);
+      }
     }
+    return json({ deleted: true, assetCleanupPending: failed.length > 0 }, failed.length ? 202 : 200);
+  } catch (error) {
+    console.error("Permanent document deletion failed", documentId, error);
+    return json({ code: "DOCUMENT_DELETE_FAILED", message: "The document could not be deleted. Try again." }, 503);
   }
-  return json({ deleted: true, assetCleanupPending: failed.length > 0 }, failed.length ? 202 : 200);
 }
 
 async function getTeamMembers(request: Request, env: Env): Promise<Response> {
@@ -2230,7 +2312,7 @@ async function submitSopReview(request: Request, env: Env): Promise<Response> {
     await removeSopAssets(env, assetKeys);
     console.error("SOP review submission failed", error instanceof Error ? error.message : "Unknown error");
     if (error instanceof Error && error.message.includes("status 404")) {
-      return json({ code: "DATABASE_MIGRATION_REQUIRED", message: "SOP review storage is not installed in this Supabase project. Apply migrations 202609210018 and 202609210019, then submit this draft again." }, 503);
+      return json({ code: "SOP_REVIEW_UNAVAILABLE", message: "The SOP could not be submitted for review. Try again later." }, 503);
     }
     return json({ code: "SUBMISSION_FAILED", message: "The SOP could not be submitted for review." }, 502);
   }

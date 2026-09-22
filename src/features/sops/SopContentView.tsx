@@ -54,6 +54,20 @@ export function ContentBlocks({ blocks }: { blocks: SopBlock[] }) {
   return <>{children}</>;
 }
 
+export function SopContentEditor({ content, onChange }: { content: SopContent; onChange: (content: SopContent) => void }) {
+  const updateRun = (blockIndex: number, runIndex: number, text: string) => onChange({ ...content, blocks: content.blocks.map((block, index) => index !== blockIndex ? block : { ...block, runs: block.runs?.map((run, position) => position === runIndex ? { ...run, text } : run) }) });
+  const updateCellRun = (blockIndex: number, rowIndex: number, cellIndex: number, runIndex: number, text: string) => onChange({ ...content, blocks: content.blocks.map((block, index) => index !== blockIndex ? block : { ...block, rows: block.rows?.map((row, rowPosition) => rowPosition !== rowIndex ? row : row.map((cell, cellPosition) => cellPosition !== cellIndex ? cell : cell.map((run, runPosition) => runPosition === runIndex ? { ...run, text } : run))) }) });
+  const updateAlt = (blockIndex: number, alt: string) => onChange({ ...content, blocks: content.blocks.map((block, index) => index === blockIndex ? { ...block, alt } : block) });
+  return <div className="sop-content-editor">
+    {content.blocks.map((block, blockIndex) => <section key={block.id} className="sop-content-editor-block">
+      <span>{block.type.replace("-", " ")}</span>
+      {block.type === "image" ? <label>Image description<input value={block.alt || ""} maxLength={1000} onChange={(event) => updateAlt(blockIndex, event.target.value)} /></label>
+        : block.type === "table" ? block.rows?.map((row, rowIndex) => <div className="sop-content-editor-row" key={rowIndex}>{row.map((cell, cellIndex) => <div key={cellIndex}>{cell.map((run, runIndex) => <textarea aria-label={`Table row ${rowIndex + 1} column ${cellIndex + 1} text ${runIndex + 1}`} key={runIndex} value={run.text} maxLength={8000} rows={2} onChange={(event) => updateCellRun(blockIndex, rowIndex, cellIndex, runIndex, event.target.value)} />)}</div>)}</div>)
+          : block.runs?.map((run, runIndex) => <textarea aria-label={`${block.type} text ${runIndex + 1}`} key={runIndex} value={run.text} maxLength={8000} rows={block.type === "heading" ? 1 : 3} onChange={(event) => updateRun(blockIndex, runIndex, event.target.value)} />)}
+    </section>)}
+  </div>;
+}
+
 export function OriginalFile({ file }: { file: File }) {
   const [url, setUrl] = useState("");
   useEffect(() => {

@@ -217,3 +217,5 @@
     padding: var(--tds-space-5, 24px);
   }
 }
+.library-pagination { display: flex; align-items: center; justify-content: center; gap: var(--space-4); margin-top: var(--space-5); }
+.library-pagination button { min-height: 44px; padding: 0 var(--space-4); }

@@ -11,21 +11,22 @@ async function read<T>(path: string): Promise<T> {
 }
 async function change(documentId: string, body: object): Promise<void> {
   const response = await fetch(`/api/library/${documentId}/lifecycle`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const result = await response.json() as { message?: string };
-  if (!response.ok) throw new Error(result.message || "The change could not be saved.");
+  const result = await response.json() as { code?: string };
+  if (!response.ok) { console.error("Knowledge lifecycle change failed", response.status, result.code); throw new Error("The change could not be saved. Try again."); }
   invalidateApiCache("/api/library");
 }
 export function KnowledgeLifecycle({ documentId, label, canManage, replacements, onChanged, onOpenReplacement }: { documentId: string; label: string; canManage: boolean; replacements: { id: string; title: string }[]; onChanged: () => void; onOpenReplacement: (id: string) => void }) {
-  const [data, setData] = useState<Lifecycle | null>(null); const [error, setError] = useState("");
+  const [data, setData] = useState<Lifecycle | null>(null); const [error, setError] = useState(""); const [unavailable, setUnavailable] = useState(false);
   const [reason, setReason] = useState(""); const [replacementId, setReplacementId] = useState(""); const [busy, setBusy] = useState(false);
   const historical = label === "deprecated" || label === "outdated";
-  useEffect(() => { let active = true; void read<Lifecycle>(`/api/library/${documentId}/lifecycle`).then((value) => { if (active) setData(value); }).catch((failure: Error) => { if (active) setError(failure.message); }); return () => { active = false; }; }, [documentId]);
+  useEffect(() => { let active = true; void read<Lifecycle>(`/api/library/${documentId}/lifecycle`).then((value) => { if (active) setData(value); }).catch((failure: Error) => { console.error("Knowledge lifecycle could not be loaded", failure); if (active) setUnavailable(true); }); return () => { active = false; }; }, [documentId]);
   const submit = async (action: "flag" | "deprecate" | "outdate") => {
     setBusy(true); setError("");
     try { await change(documentId, { action, reason, replacementId: action === "flag" ? null : replacementId || null }); onChanged(); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : "The change could not be saved."); }
+    catch (failure) { console.error("Knowledge lifecycle change could not be saved", failure); setError("The change could not be saved. Try again."); }
     finally { setBusy(false); }
   };
+  if (unavailable) return null;
   return <section className="knowledge-lifecycle" aria-label="Knowledge currency">
     {historical && <p className="lifecycle-warning" role="note"><strong>{label === "deprecated" ? "Deprecated" : "Outdated"} — historical reference only.</strong> This guidance is excluded from the current knowledge library.</p>}
     {data?.reason && <p>Reason: {data.reason}{data.changedAt && <> · {new Date(data.changedAt).toLocaleDateString()}</>}</p>}

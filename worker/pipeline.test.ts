@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { buildKnowledgeContext, rankKnowledge } from "../server/modules/knowledge/chat.js";
-import { adminSetupInvitationStatus, defaultReviewOrganizationWide, durableSessionDeadlines, hasReviewAccess, isOpaqueSessionToken, normalizeAvatarUrl, normalizeBotCommand, normalizedSourceMessages, organizationWideFromReview, sourceContentFromEvidenceMap, sourceContentText, validateGeminiDraft, verifyWebhookSignature, webhookEventId } from "./index.js";
+import { adminSetupInvitationStatus, canAccessIntegrationSettings, defaultReviewOrganizationWide, documentAssetKeys, durableSessionDeadlines, hasReviewAccess, isOpaqueSessionToken, mergeSourceContentEdit, normalizeAvatarUrl, normalizeBotCommand, normalizedSourceMessages, organizationWideFromReview, sourceContentFromEvidenceMap, sourceContentText, validateGeminiDraft, verifyWebhookSignature, webhookEventId } from "./index.js";
+
+describe("integration settings access", () => {
+  it("allows only the designated developer account", () => {
+    expect(canAccessIntegrationSettings("nickolas.gettel@tdsynnex.com")).toBe(true);
+    expect(canAccessIntegrationSettings(" NICKOLAS.GETTEL@TDSYNNEX.COM ")).toBe(true);
+    expect(canAccessIntegrationSettings("admin@tdsynnex.com")).toBe(false);
+    expect(canAccessIntegrationSettings(undefined)).toBe(false);
+  });
+});
+
+describe("permanent document asset cleanup", () => {
+  it("uses only unique asset keys returned by the deleted document RPC", () => {
+    expect(documentAssetKeys({ assetKeys: ["org/upload/image.png", "org/upload/image.png", null] })).toEqual(["org/upload/image.png"]);
+    expect(documentAssetKeys({})).toEqual([]);
+  });
+});
 
 describe("review publication visibility", () => {
   it("publishes organization-wide by default and honors an explicit private choice", () => {
@@ -43,6 +59,26 @@ describe("source-faithful presentation", () => {
     expect(ranked).toHaveLength(1);
     expect(buildKnowledgeContext(ranked)).toContain("Keep this wording");
     expect(sourceContentText(sourceContentFromEvidenceMap({ source_content: { ...content, blocks: [{ ...content.blocks[0], src: "data:image/png;base64,AAAA" }] } }))).toBe("");
+  });
+
+  it("allows text edits while preserving structure, formatting, and asset keys", () => {
+    const existing = sourceContentFromEvidenceMap({ source_content: { blocks: [
+      { id: "text", sourceId: "D1", type: "paragraph", runs: [{ text: "Before", bold: true }] },
+      { id: "image", sourceId: "D1", type: "image", alt: "Before", assetKey: "org/upload/image.png" },
+    ], suggestions: [], limitations: [] } });
+    const edited = mergeSourceContentEdit(existing, { blocks: [
+      { id: "text", sourceId: "D1", type: "paragraph", runs: [{ text: "After", bold: true }] },
+      { id: "image", sourceId: "D1", type: "image", alt: "After", src: "/api/sop-assets/document/version/image" },
+    ] });
+    expect(edited?.blocks[0]).toMatchObject({ runs: [{ text: "After", bold: true }] });
+    expect(edited?.blocks[1]).toMatchObject({ alt: "After", assetKey: "org/upload/image.png" });
+  });
+
+  it("rejects SOP structure, formatting, and asset tampering", () => {
+    const existing = sourceContentFromEvidenceMap({ source_content: { blocks: [{ id: "text", sourceId: "D1", type: "paragraph", runs: [{ text: "Before", bold: true }] }], suggestions: [], limitations: [] } });
+    expect(mergeSourceContentEdit(existing, { blocks: [{ id: "other", sourceId: "D1", type: "paragraph", runs: [{ text: "After", bold: true }] }] })).toBeNull();
+    expect(mergeSourceContentEdit(existing, { blocks: [{ id: "text", sourceId: "D1", type: "paragraph", runs: [{ text: "After", bold: false }] }] })).toBeNull();
+    expect(mergeSourceContentEdit(existing, { blocks: [{ id: "text", sourceId: "D1", type: "paragraph", assetKey: "other/image.png", runs: [{ text: "After", bold: true }] }] })).toBeNull();
   });
 });
 
