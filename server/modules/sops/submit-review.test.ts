@@ -31,6 +31,36 @@ describe("SOP review submission validation", () => {
     expect(submission.sourceProviderId).toMatch(/^upload:[0-9a-f-]{36}$/);
     expect(submission.sourceMarkdown).not.toContain("data:");
     expect(submission.sourceMarkdown).toContain("Image unavailable");
+    expect(submission.sourceContent).toEqual({
+      blocks: [{ id: "D1-B1", sourceId: "D1", type: "image", src: undefined, alt: "Embedded screenshot" }],
+      suggestions: [],
+      limitations: [],
+    });
+    expect(JSON.stringify(submission.sourceContent)).not.toContain('"src"');
+  });
+
+  it("preserves source formatting while removing image bytes", () => {
+    const submission = validateSopSubmission({
+      ...valid,
+      content: {
+        blocks: [
+          { id: "D1-B1", sourceId: "D1", type: "heading", level: 2, runs: [{ text: "Service level", bold: true, underline: true }] },
+          { id: "D1-B2", sourceId: "D1", type: "list-item", ordered: true, marker: "1.", runs: [{ text: "Choose ETSOE", italic: true }] },
+          { id: "D1-B3", sourceId: "D1", type: "table", rows: [[[ { text: "Code", bold: true } ], [ { text: "Meaning" } ]]] },
+          { id: "D1-B4", sourceId: "D1", type: "image", src: "data:image/png;base64,AAAA", alt: "Quote screen" },
+        ],
+        suggestions: [],
+        limitations: ["Floating layout may differ."],
+      },
+    });
+
+    expect(submission.sourceContent?.blocks).toEqual([
+      { id: "D1-B1", sourceId: "D1", type: "heading", level: 2, runs: [{ text: "Service level", bold: true, italic: undefined, underline: true }], src: undefined },
+      { id: "D1-B2", sourceId: "D1", type: "list-item", ordered: true, marker: "1.", runs: [{ text: "Choose ETSOE", bold: undefined, italic: true, underline: undefined }], src: undefined },
+      { id: "D1-B3", sourceId: "D1", type: "table", rows: [[[ { text: "Code", bold: true } ], [ { text: "Meaning" } ]]], src: undefined },
+      { id: "D1-B4", sourceId: "D1", type: "image", alt: "Quote screen", src: undefined },
+    ]);
+    expect(JSON.stringify(submission.sourceContent)).not.toContain("data:image");
   });
 
   it("builds review steps from an imported document when the draft has content blocks only", () => {

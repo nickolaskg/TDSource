@@ -1627,6 +1627,65 @@ export function defaultReviewOrganizationWide(storedOrganizationWide: boolean, h
   return hasPublishedVersion ? storedOrganizationWide : true;
 }
 
+type SourceRun = { text: string; bold?: boolean; italic?: boolean; underline?: boolean };
+type SourceBlock = {
+  id: string; sourceId: string; type: "heading" | "paragraph" | "list-item" | "table" | "image";
+  runs?: SourceRun[]; level?: number; ordered?: boolean; marker?: string; rows?: SourceRun[][][]; alt?: string;
+};
+export interface StoredSourceContent { blocks: SourceBlock[]; suggestions: []; limitations: string[] }
+
+function sourceRun(value: unknown): value is SourceRun {
+  if (!value || typeof value !== "object") return false;
+  const run = value as Record<string, unknown>;
+  return typeof run.text === "string" && run.text.length <= 8000
+    && [run.bold, run.italic, run.underline].every((flag) => flag === undefined || typeof flag === "boolean");
+}
+
+/** Read the source-faithful presentation only after document authorization. */
+export function sourceContentFromEvidenceMap(value: unknown): StoredSourceContent | null {
+  if (!value || typeof value !== "object") return null;
+  const content = (value as Record<string, unknown>).source_content;
+  if (!content || typeof content !== "object") return null;
+  const record = content as Record<string, unknown>;
+  if (!Array.isArray(record.blocks) || record.blocks.length > 1000 || !Array.isArray(record.limitations) || record.limitations.length > 100) return null;
+  if (!record.limitations.every((item) => typeof item === "string" && item.length <= 8000)) return null;
+  const blocks: SourceBlock[] = [];
+  for (const value of record.blocks) {
+    if (!value || typeof value !== "object") return null;
+    const block = value as Record<string, unknown>;
+    if ("src" in block || typeof block.id !== "string" || block.id.length > 200 || typeof block.sourceId !== "string" || block.sourceId.length > 100
+      || !["heading", "paragraph", "list-item", "table", "image"].includes(String(block.type))) return null;
+    if (block.runs !== undefined && (!Array.isArray(block.runs) || block.runs.length > 500 || !block.runs.every(sourceRun))) return null;
+    if (block.rows !== undefined && (!Array.isArray(block.rows) || block.rows.length > 100 || !block.rows.every((row) => Array.isArray(row) && row.length <= 100 && row.every((cell) => Array.isArray(cell) && cell.length <= 100 && cell.every(sourceRun))))) return null;
+    if (block.level !== undefined && !Number.isInteger(block.level)) return null;
+    if (block.ordered !== undefined && typeof block.ordered !== "boolean") return null;
+    if (block.marker !== undefined && (typeof block.marker !== "string" || block.marker.length > 20)) return null;
+    if (block.alt !== undefined && (typeof block.alt !== "string" || block.alt.length > 1000)) return null;
+    const clean: SourceBlock = {
+      id: block.id,
+      sourceId: block.sourceId,
+      type: block.type as SourceBlock["type"],
+    };
+    if (Array.isArray(block.runs)) clean.runs = (block.runs as SourceRun[]).map(({ text, bold, italic, underline }) => ({ text, bold, italic, underline }));
+    if (Array.isArray(block.rows)) clean.rows = (block.rows as SourceRun[][][]).map((row) => row.map((cell) => cell.map(({ text, bold, italic, underline }) => ({ text, bold, italic, underline }))));
+    if (typeof block.level === "number") clean.level = block.level;
+    if (typeof block.ordered === "boolean") clean.ordered = block.ordered;
+    if (typeof block.marker === "string") clean.marker = block.marker;
+    if (typeof block.alt === "string") clean.alt = block.alt;
+    blocks.push(clean);
+  }
+  return { blocks, suggestions: [], limitations: record.limitations as string[] };
+}
+
+export function sourceContentText(content: StoredSourceContent | null): string {
+  if (!content) return "";
+  return content.blocks.map((block) => {
+    if (block.type === "table") return (block.rows || []).map((row) => row.map((cell) => cell.map(({ text }) => text).join("")).join("\t")).join("\n");
+    if (block.type === "image") return block.alt || "";
+    return (block.runs || []).map(({ text }) => text).join("");
+  }).filter(Boolean).join("\n");
+}
+
 async function authorizedDocumentIds(env: Env, session: SessionIdentity, mode: "read" | "review" | "revise" = "read"): Promise<string[]> {
   if (!session.organizationId) return [];
   const allTeamIds = (session.teamRoles || []).map(({ teamId }) => teamId);
@@ -1742,7 +1801,7 @@ async function getReviewDetail(request: Request, env: Env, documentId: string): 
   if (!hasReviewAccess(session.teamRoles)) return json({ code: "FORBIDDEN" }, 403);
   if (!(await authorizedDocumentIds(env, session, "review")).includes(documentId)) return json({ code: "NOT_FOUND" }, 404);
   const [versions, documents] = await Promise.all([
-    supabaseRequest<Array<{ id: string; source_snapshot_id: string; title: string; problem: string; summary: string; steps: string[]; warnings: string[]; evidence_map: Record<string, unknown>; version_number: number }>>(env,
+    supabaseRequest<Array<{ id: string; source_snapshot_id: string; title: string; problem: string; summary: string; steps: string[]; warnings: string[]; evidence_map: unknown; version_number: number }>>(env,
       `document_versions?document_id=eq.${documentId}&select=id,source_snapshot_id,title,problem,summary,steps,warnings,evidence_map,version_number&order=version_number.desc&limit=1`),
     supabaseRequest<Array<{ organization_wide: boolean; current_published_version_id: string | null }>>(env,
       `documents?id=eq.${documentId}&select=organization_wide,current_published_version_id&limit=1`),
@@ -1755,6 +1814,7 @@ async function getReviewDetail(request: Request, env: Env, documentId: string): 
   return json({
     id: documentId,
     draft: version,
+    sourceContent: sourceContentFromEvidenceMap(version.evidence_map),
     sourceMessages: messages,
     organizationWide: document
       ? defaultReviewOrganizationWide(document.organization_wide, Boolean(document.current_published_version_id))
@@ -1876,8 +1936,8 @@ async function chatKnowledge(request: Request, env: Env): Promise<Response> {
   const documents = await supabaseRequest<Array<{ id: string; current_published_version_id: string; transcript_visible_to_basic: boolean }>>(env,
     `documents?id=${inFilter(documentIds)}&workflow_state=eq.published&current_published_version_id=not.is.null${libraryLifecycleFilter(false)}&select=id,current_published_version_id,transcript_visible_to_basic`);
   if (documents.length === 0) return json({ answer: "I could not find published knowledge available to you.", citations: [], sources: [] });
-  const versions = await supabaseRequest<Array<{ id: string; document_id: string; source_snapshot_id: string; title: string; summary: string; problem: string; steps: string[]; warnings: string[] }>>(env,
-    `document_versions?id=${inFilter(documents.map(({ current_published_version_id }) => current_published_version_id))}&select=id,document_id,source_snapshot_id,title,summary,problem,steps,warnings`);
+  const versions = await supabaseRequest<Array<{ id: string; document_id: string; source_snapshot_id: string; title: string; summary: string; problem: string; steps: string[]; warnings: string[]; evidence_map: unknown }>>(env,
+    `document_versions?id=${inFilter(documents.map(({ current_published_version_id }) => current_published_version_id))}&select=id,document_id,source_snapshot_id,title,summary,problem,steps,warnings,evidence_map`);
   const staff = hasReviewAccess(session.teamRoles);
   const visibleSnapshotIds = versions.filter((version) => {
     const document = documents.find(({ current_published_version_id }) => current_published_version_id === version.id);
@@ -1889,8 +1949,9 @@ async function chatKnowledge(request: Request, env: Env): Promise<Response> {
     : [];
   const records: KnowledgeRecord[] = documents.map((document) => {
     const version = versions.find(({ id }) => id === document.current_published_version_id);
-    const transcript = version ? sourceMessages.filter(({ source_snapshot_id }) => source_snapshot_id === version.source_snapshot_id).map(({ source_markdown }) => source_markdown).join("\n").slice(0, 12000) : "";
-    return { id: document.id, title: version?.title || "Untitled knowledge", summary: version?.summary || "", problem: version?.problem || "", steps: version?.steps || [], warnings: version?.warnings || [], sourceText: transcript };
+    const transcript = version ? sourceMessages.filter(({ source_snapshot_id }) => source_snapshot_id === version.source_snapshot_id).map(({ source_markdown }) => source_markdown).join("\n") : "";
+    const presentation = sourceContentText(sourceContentFromEvidenceMap(version?.evidence_map));
+    return { id: document.id, title: version?.title || "Untitled knowledge", summary: version?.summary || "", problem: version?.problem || "", steps: version?.steps || [], warnings: version?.warnings || [], sourceText: [presentation, transcript].filter(Boolean).join("\n").slice(0, 12000) };
   });
   const ranked = rankKnowledge(question, records);
   if (ranked.length === 0) return json({ answer: "I could not find a matching answer in the published knowledge base.", citations: [], sources: [] });
@@ -1920,8 +1981,8 @@ async function getLibraryDetail(request: Request, env: Env, documentId: string):
   const document = documents[0]; if (!document) return json({ code: "NOT_FOUND" }, 404);
   const attributionIds = [document.originally_approved_by_user_id, document.last_updated_by_user_id].filter((id): id is string => Boolean(id));
   const [versions, spaces, attributionUsers] = await Promise.all([
-    supabaseRequest<Array<{ id: string; source_snapshot_id: string; title: string; problem: string; summary: string; steps: string[]; warnings: string[]; version_number: number }>>(env,
-      `document_versions?id=eq.${document.current_published_version_id}&select=id,source_snapshot_id,title,problem,summary,steps,warnings,version_number&limit=1`),
+    supabaseRequest<Array<{ id: string; source_snapshot_id: string; title: string; problem: string; summary: string; steps: string[]; warnings: string[]; evidence_map: unknown; version_number: number }>>(env,
+      `document_versions?id=eq.${document.current_published_version_id}&select=id,source_snapshot_id,title,problem,summary,steps,warnings,evidence_map,version_number&limit=1`),
     supabaseRequest<Array<{ display_name: string }>>(env, `source_spaces?id=eq.${document.source_space_id}&select=display_name&limit=1`),
     attributionIds.length ? supabaseRequest<Array<{ id: string; display_name: string }>>(env, `users?id=${inFilter(attributionIds)}&select=id,display_name`) : Promise.resolve([]),
   ]);
@@ -1935,7 +1996,7 @@ async function getLibraryDetail(request: Request, env: Env, documentId: string):
   return json({ id: document.id, label: document.knowledge_label, sourceSpace: spaces[0]?.display_name || "Webex space", updatedAt: document.updated_at, transcriptVisible, canManage, canManageVisibility, organizationWide: document.organization_wide,
     originallyApprovedBy: attributionUsers.find(({ id }) => id === document.originally_approved_by_user_id)?.display_name || null,
     lastUpdatedBy: attributionUsers.find(({ id }) => id === document.last_updated_by_user_id)?.display_name || null,
-    draft: version, sourceMessages });
+    draft: version, sourceContent: sourceContentFromEvidenceMap(version.evidence_map), sourceMessages });
 }
 
 async function revisePublishedDocument(request: Request, env: Env, documentId: string): Promise<Response> {
@@ -2067,6 +2128,7 @@ async function submitSopReview(request: Request, env: Env): Promise<Response> {
         p_source_provider_id: submission.sourceProviderId,
         p_source_name: `SOP upload: ${submission.draft.title}`,
         p_source_markdown: submission.sourceMarkdown,
+        p_source_content: submission.sourceContent,
         p_generated_at: submission.generatedAt,
         p_title: submission.draft.title,
         p_problem: submission.draft.summary,

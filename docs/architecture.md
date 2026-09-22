@@ -126,6 +126,11 @@ transcripts to Basic users.
 
 The first slice uses ranked retrieval over published version fields and visible
 source messages so existing approved content works before embeddings are loaded.
+Uploaded SOPs also store validated, binary-free `source_content` in the document
+version evidence map for source-faithful review and library rendering. This is
+not an AI summary. Its validated text is eligible retrieval context for every
+user authorized to read the published document; hidden Webex source messages
+remain restricted by `transcript_visible_to_basic`.
 Migration `202609180017_rag_knowledge_chunks.sql` adds the access-filtered
 pgvector table and RPC. Embedding generation and chunk backfill remain a later
 deployment step; they must use the same lifecycle and visibility predicates.

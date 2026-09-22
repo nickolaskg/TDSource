@@ -29,6 +29,12 @@ procedure using the configured `LLM_PROVIDER` and `LLM_MODEL`.
   to Supabase, invalidates the review cache, and opens that item in the durable
   moderator review queue. Leaving the page before submission discards the local
   draft; refreshing or signing out after submission does not.
+- Submission stores the validated, binary-free source blocks separately from the
+  editable AI draft. Review and library pages use those blocks for faithful text,
+  list, and table presentation. Knowledge Chat can retrieve the validated text
+  from those approved blocks without exposing restricted Webex transcripts;
+  `source_messages.source_markdown` remains the immutable transcript context
+  where transcript visibility permits it.
 
 ## Local testing and access
 

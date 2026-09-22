@@ -43,6 +43,7 @@ export interface ValidatedSopSubmission {
   sourceProviderId: string;
   sourceSpaceProviderId: string;
   sourceMarkdown: string;
+  sourceContent?: SopContent;
 }
 
 /** Convert the editor's structured steps to the text array used by the review/library schema. */
@@ -75,5 +76,6 @@ export function validateSopSubmission(value: unknown): ValidatedSopSubmission {
     sourceProviderId: `upload:${uploadId}`,
     sourceSpaceProviderId: `upload:${uploadId}`,
     sourceMarkdown: sopMarkdown(result),
+    sourceContent: result.content,
   };
 }

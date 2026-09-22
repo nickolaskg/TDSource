@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { adminSetupInvitationStatus, defaultReviewOrganizationWide, durableSessionDeadlines, hasReviewAccess, isOpaqueSessionToken, normalizeAvatarUrl, normalizeBotCommand, normalizedSourceMessages, organizationWideFromReview, validateGeminiDraft, verifyWebhookSignature, webhookEventId } from "./index.js";
+import { buildKnowledgeContext, rankKnowledge } from "../server/modules/knowledge/chat.js";
+import { adminSetupInvitationStatus, defaultReviewOrganizationWide, durableSessionDeadlines, hasReviewAccess, isOpaqueSessionToken, normalizeAvatarUrl, normalizeBotCommand, normalizedSourceMessages, organizationWideFromReview, sourceContentFromEvidenceMap, sourceContentText, validateGeminiDraft, verifyWebhookSignature, webhookEventId } from "./index.js";
 
 describe("review publication visibility", () => {
   it("publishes organization-wide by default and honors an explicit private choice", () => {
@@ -16,6 +17,27 @@ describe("review publication visibility", () => {
   it("preserves the visibility of an already-published document during an update", () => {
     expect(defaultReviewOrganizationWide(false, true)).toBe(false);
     expect(defaultReviewOrganizationWide(true, true)).toBe(true);
+  });
+});
+
+describe("source-faithful presentation", () => {
+  const content = { blocks: [{ id: "D1-B1", sourceId: "D1", type: "paragraph", runs: [{ text: "Keep this wording", bold: true }] }], limitations: [] };
+
+  it("returns validated source content stored separately from retrieval text", () => {
+    expect(sourceContentFromEvidenceMap({ source: "local_sop_upload", source_content: { ...content, untrusted: "not returned" } })).toEqual({ ...content, suggestions: [] });
+  });
+
+  it("omits malformed or binary presentation content", () => {
+    expect(sourceContentFromEvidenceMap({ source_content: { ...content, blocks: [{ ...content.blocks[0], src: "data:image/png;base64,AAAA" }] } })).toBeNull();
+    expect(sourceContentFromEvidenceMap({ source_content: { blocks: "invalid", limitations: [] } })).toBeNull();
+  });
+
+  it("uses approved presentation text for ranking and grounded context", () => {
+    const sourceText = sourceContentText(sourceContentFromEvidenceMap({ source_content: content }));
+    const ranked = rankKnowledge("wording", [{ id: "doc-1", title: "Procedure", summary: "", problem: "", steps: [], warnings: [], sourceText }]);
+    expect(ranked).toHaveLength(1);
+    expect(buildKnowledgeContext(ranked)).toContain("Keep this wording");
+    expect(sourceContentText(sourceContentFromEvidenceMap({ source_content: { ...content, blocks: [{ ...content.blocks[0], src: "data:image/png;base64,AAAA" }] } }))).toBe("");
   });
 });
 
