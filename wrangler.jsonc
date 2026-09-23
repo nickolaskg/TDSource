@@ -15,7 +15,9 @@
     "SESSION_COOKIE_NAME": "__Host-tds_session",
     "WEBEX_REDIRECT_URI": "https://the-document-source.nickolaskg.workers.dev/api/auth/webex/callback",
     "LLM_PROVIDER": "gemini",
-    "LLM_MODEL": "gemini-2.5-flash"
+    "LLM_MODEL": "gemini-2.5-flash",
+    "LLM_BASE_URL": "http://127.0.0.1:11434",
+    "LLM_CONTEXT_TOKENS": "16384"
   },
   "secrets": {
     "required": ["SESSION_ENCRYPTION_KEY", "WEBEX_CLIENT_ID", "WEBEX_CLIENT_SECRET", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "WEBEX_BOT_ACCESS_TOKEN", "WEBEX_BOT_NAME", "WEBEX_WEBHOOK_SECRET", "GEMINI_AI_API"]

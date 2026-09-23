@@ -18,6 +18,8 @@
 **/.dev.vars
 **/.dev.vars.*
 !**/.dev.vars.example
+docker.env
+docker.env.*
 
 # Cloudflare local state and generated configuration
 **/.wrangler/
