@@ -7,7 +7,7 @@ import { parseCaptureCommand, type CaptureCommand } from "../server/modules/capt
 import { redactForLlm } from "../server/modules/redaction/redact.js";
 import { resolveCaptureReviewTeam } from "../server/modules/access/team-policy.js";
 import { embeddingConfigured, embeddingModel, embeddingProvider, integrationStatus, llmConfigured, supabaseSecret } from "../server/modules/config/integration-status.js";
-import { requestLlmJson } from "../server/modules/llm/provider.js";
+import { LlmProviderError, requestLlmJson } from "../server/modules/llm/provider.js";
 import { buildKnowledgeContext, chatQuestion, mergeRankedKnowledge, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "../server/modules/knowledge/chat.js";
 import { buildKnowledgeChunks } from "../server/modules/rag/chunks.js";
 import { createEmbedding, EmbeddingProviderError } from "../server/modules/rag/embeddings.js";
@@ -979,6 +979,16 @@ export function validateGeneratedDraft(value: unknown, messageCount: number): Ge
 // Backward-compatible export for existing callers while provider names become neutral.
 export const validateGeminiDraft = validateGeneratedDraft;
 
+export async function retryWebexDraft<T>(request: () => Promise<T>, wait: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 1_000))): Promise<T> {
+  try {
+    return await request();
+  } catch (error) {
+    if (!(error instanceof LlmProviderError) || !error.retryable) throw error;
+    await wait();
+    return request();
+  }
+}
+
 async function generateLlmDraft(env: Env, messages: Array<Record<string, string | undefined>>): Promise<GeneratedDraft> {
   if (!llmConfigured(env)) throw new Error("AI provider is not configured");
   const transcript = messages.map((message, index) => `[M${index + 1}] ${message.markdown || message.text || "[Attachment or rich content]"}`).join("\n\n");
@@ -994,12 +1004,12 @@ async function generateLlmDraft(env: Env, messages: Array<Record<string, string 
       } },
     },
   };
-  const output = await requestLlmJson({
+  const output = await retryWebexDraft(() => requestLlmJson({
     env,
     systemPrompt: "Create a concise internal knowledge draft using only the supplied source. Do not invent facts. Preserve uncertainty. Each evidence index is the 1-based source message number supporting that field. Every non-empty step and warning must have a corresponding evidence array.",
     parts: [{ text: `Convert this synthetic Webex test thread into a review draft:\n\n${sanitized}` }],
     schema,
-  });
+  }));
   return validateGeneratedDraft(output, messages.length);
 }
 

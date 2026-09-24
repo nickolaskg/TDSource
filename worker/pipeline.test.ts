@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildKnowledgeContext, rankKnowledge } from "../server/modules/knowledge/chat.js";
-import { adminSetupInvitationStatus, defaultReviewOrganizationWide, durableSessionDeadlines, hasReviewAccess, isOpaqueSessionToken, normalizeAvatarUrl, normalizeBotCommand, normalizedSourceMessages, organizationWideFromReview, sourceContentFromEvidenceMap, sourceContentText, validateGeminiDraft, verifyWebhookSignature, webhookEventId } from "./index.js";
+import { adminSetupInvitationStatus, defaultReviewOrganizationWide, durableSessionDeadlines, hasReviewAccess, isOpaqueSessionToken, normalizeAvatarUrl, normalizeBotCommand, normalizedSourceMessages, organizationWideFromReview, retryWebexDraft, sourceContentFromEvidenceMap, sourceContentText, validateGeminiDraft, verifyWebhookSignature, webhookEventId } from "./index.js";
+import { LlmProviderError } from "../server/modules/llm/provider.js";
 
 describe("review publication visibility", () => {
   it("publishes organization-wide by default and honors an explicit private choice", () => {
@@ -124,6 +125,28 @@ describe("Webex webhook idempotency", () => {
     const second = { id: "same-webhook", data: { id: "command-2" } };
     expect(webhookEventId(first)).toBe("command-1");
     expect(webhookEventId(second)).toBe("command-2");
+  });
+});
+
+describe("Webex draft reliability", () => {
+  it("retries one transient provider failure", async () => {
+    let attempts = 0;
+    const result = await retryWebexDraft(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new LlmProviderError("temporary", 503, "gemini", true);
+      return "draft";
+    }, async () => undefined);
+    expect(result).toBe("draft");
+    expect(attempts).toBe(2);
+  });
+
+  it("does not retry non-retryable failures", async () => {
+    let attempts = 0;
+    await expect(retryWebexDraft(async () => {
+      attempts += 1;
+      throw new LlmProviderError("quota", 429, "gemini", false);
+    }, async () => undefined)).rejects.toMatchObject({ status: 429 });
+    expect(attempts).toBe(1);
   });
 });
 
