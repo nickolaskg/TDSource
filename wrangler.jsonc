@@ -18,7 +18,7 @@
     "LLM_MODEL": "gemini-2.5-flash",
     "EMBEDDING_PROVIDER": "gemini",
     "EMBEDDING_MODEL": "gemini-embedding-2",
-    "RAG_VECTOR_ENABLED": "false",
+    "RAG_VECTOR_ENABLED": "true",
     "RAG_BACKFILL_ADMIN_EMAILS": "nickolas.gettel@tdsynnex.com"
   },
   "triggers": {
