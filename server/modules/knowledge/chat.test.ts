@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildKnowledgeContext, chatQuestion, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "./chat.js";
+import { buildKnowledgeContext, chatQuestion, mergeRankedKnowledge, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "./chat.js";
 
 const records: KnowledgeRecord[] = [
   { id: "a", title: "Reset a password", summary: "Use Settings to reset it.", problem: "Password expired", steps: ["Open Settings", "Choose Reset password"], warnings: [] },
@@ -17,6 +17,13 @@ describe("knowledge chat helpers", () => {
     expect(context).toContain("[S1]");
     expect(context).toContain("Reset a password");
     expect(buildKnowledgeContext(rankKnowledge("quote", [{ ...records[0], summary: "Quote number Q-1234" }]))).toContain("[QUOTE_NUMBER_1]");
+  });
+
+  it("prefers semantic matches, removes duplicates, and keeps lexical fallback", () => {
+    const lexical = rankKnowledge("password access", records);
+    const semantic = [{ ...records[1], score: 95 }];
+    expect(mergeRankedKnowledge(semantic, lexical).map(({ id }) => id)).toEqual(["b", "a"]);
+    expect(mergeRankedKnowledge([], lexical).map(({ id }) => id)).toEqual(lexical.map(({ id }) => id));
   });
 
   it("validates questions and limits citation indexes", () => {

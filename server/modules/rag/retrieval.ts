@@ -20,6 +20,7 @@ export interface KnowledgeChunkSearch {
   organizationId: string;
   userId: string;
   embedding: readonly number[];
+  embeddingModel: string;
   matchCount?: number;
   minSimilarity?: number;
 }
@@ -43,10 +44,12 @@ export function toPgVector(embedding: readonly number[]): string {
 
 export function buildKnowledgeChunkSearchBody(input: KnowledgeChunkSearch): Record<string, unknown> {
   if (!input.organizationId || !input.userId) throw new Error("RAG retrieval requires organization and user identity");
+  if (!input.embeddingModel.trim()) throw new Error("RAG retrieval requires embedding model identity");
   return {
     p_organization_id: input.organizationId,
     p_user_id: input.userId,
     p_query_embedding: toPgVector(input.embedding),
+    p_embedding_model: input.embeddingModel.trim(),
     p_match_count: normalizedMatchCount(input.matchCount),
     p_min_similarity: normalizedSimilarity(input.minSimilarity),
   };

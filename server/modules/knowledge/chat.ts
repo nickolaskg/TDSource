@@ -31,6 +31,12 @@ export function rankKnowledge(query: string, records: readonly KnowledgeRecord[]
   }).filter((record) => record.score > 0).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title)).slice(0, limit);
 }
 
+export function mergeRankedKnowledge(vector: readonly RankedKnowledge[], lexical: readonly RankedKnowledge[], limit = 6): RankedKnowledge[] {
+  return [...vector, ...lexical]
+    .filter((record, index, all) => all.findIndex(({ id }) => id === record.id) === index)
+    .slice(0, Math.max(0, limit));
+}
+
 export function buildKnowledgeContext(records: readonly RankedKnowledge[]): string {
   return records.map((record, index) => {
     const source = `S${index + 1}`;

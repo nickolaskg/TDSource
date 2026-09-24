@@ -135,15 +135,23 @@ Migration `202609180017_rag_knowledge_chunks.sql` adds the access-filtered
 pgvector table and RPC. Embedding generation and chunk backfill remain a later
 deployment step; they must use the same lifecycle and visibility predicates.
 
-### Next implementation milestone: vector RAG activation
+### Vector RAG activation
 
-Make semantic retrieval the next feature milestone. Generate embeddings for
-approved document chunks, backfill current published versions, update chunks on
-publish/deprecate/archive transitions, and query `search_knowledge_chunks`
-before invoking the LLM. The server must continue to enforce document access
-and lifecycle filters before returning context, and answers must cite the
-retrieved document/version records. Keep the current ranked text retrieval as
-a fallback until embedding coverage and operational monitoring are verified.
+Semantic retrieval is enabled only when `RAG_VECTOR_ENABLED=true` and the
+separate embedding provider is configured. Approval and published revision
+enqueue deterministic, source-addressable chunks; a scheduled Worker retries a
+bounded set of failed jobs every five minutes. `POST /api/admin/rag/backfill`
+queues every current published version in the signed-in administrator's
+organization. The database replaces a version's chunks atomically and removes
+inactive or superseded chunks as document lifecycle state changes.
+
+Knowledge Chat embeds the question, calls the access-filtered
+`search_knowledge_chunks` RPC, and combines semantic results with the existing
+ranked-text results. The lexical path remains the fallback when vector search is
+disabled, unavailable, or has no coverage. Only approved document fields and
+validated SOP `source_content` are embedded; hidden Webex transcripts and raw
+attachments are excluded from the vector index. Answer citations are limited
+to the retrieved, authorized documents.
 
 Embedded Office images are presentation assets, not RAG text. Store supported
 images in private object storage and persist only bounded asset metadata and

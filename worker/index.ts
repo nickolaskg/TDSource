@@ -6,9 +6,13 @@ import { isApprovedEmail } from "../server/modules/auth/email-domain.js";
 import { parseCaptureCommand, type CaptureCommand } from "../server/modules/capture/command.js";
 import { redactForLlm } from "../server/modules/redaction/redact.js";
 import { resolveCaptureReviewTeam } from "../server/modules/access/team-policy.js";
-import { integrationStatus, llmConfigured, supabaseSecret } from "../server/modules/config/integration-status.js";
+import { embeddingConfigured, embeddingModel, embeddingProvider, integrationStatus, llmConfigured, supabaseSecret } from "../server/modules/config/integration-status.js";
 import { requestLlmJson } from "../server/modules/llm/provider.js";
-import { buildKnowledgeContext, chatQuestion, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "../server/modules/knowledge/chat.js";
+import { buildKnowledgeContext, chatQuestion, mergeRankedKnowledge, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "../server/modules/knowledge/chat.js";
+import { buildKnowledgeChunks } from "../server/modules/rag/chunks.js";
+import { createEmbedding, EmbeddingProviderError } from "../server/modules/rag/embeddings.js";
+import { indexKnowledgeVersion } from "../server/modules/rag/indexing.js";
+import { retrieveKnowledgeChunks } from "../server/modules/rag/retrieval.js";
 
 interface Env {
   APP_ORIGIN?: string;
@@ -31,6 +35,12 @@ interface Env {
   LLM_API_KEY?: string;
   LLM_MODEL?: string;
   GEMINI_AI_API?: string;
+  EMBEDDING_PROVIDER?: string;
+  EMBEDDING_MODEL?: string;
+  EMBEDDING_BASE_URL?: string;
+  EMBEDDING_API_KEY?: string;
+  RAG_VECTOR_ENABLED?: string;
+  RAG_BACKFILL_ADMIN_EMAILS?: string;
 }
 
 interface OAuthTransaction {
@@ -1915,6 +1925,7 @@ async function moderateReview(request: Request, env: Env, documentId: string, ac
   const label = action === "approve" && (body.label === "verified" || body.label === "unresolved") ? body.label : null;
   if (action === "approve" && !label) return json({ code: "LABEL_REQUIRED" }, 400);
   await supabaseRequest<void>(env, "rpc/moderate_document_with_visibility", { method: "POST", body: JSON.stringify({ p_document_id: documentId, p_user_id: session.appUserId, p_action: action, p_label: label, p_organization_wide: organizationWideFromReview(body.organizationWide) }) });
+  if (action === "approve") await enqueueKnowledgeIndex(env, documentId);
   return json({ ok: true });
 }
 
@@ -1977,6 +1988,79 @@ async function getLibrary(request: Request, env: Env): Promise<Response> {
   }) });
 }
 
+interface KnowledgeIndexJob {
+  document_version_id: string;
+  organization_id: string;
+  document_id: string;
+  claim_started_at: string;
+}
+
+function vectorRagEnabled(env: Env): boolean {
+  return env.RAG_VECTOR_ENABLED?.trim().toLowerCase() === "true" && embeddingConfigured(env);
+}
+
+function canRunRagBackfill(env: Env, email: string | undefined): boolean {
+  const normalized = email?.trim().toLowerCase();
+  return Boolean(normalized && env.RAG_BACKFILL_ADMIN_EMAILS?.split(",").some((value) => value.trim().toLowerCase() === normalized));
+}
+
+async function processKnowledgeIndexJob(env: Env, job: KnowledgeIndexJob): Promise<void> {
+  try {
+    const versions = await supabaseRequest<Array<{ id: string; document_id: string; title: string; problem: string; summary: string; steps: string[]; warnings: string[]; evidence_map: unknown }>>(env,
+      `document_versions?id=eq.${job.document_version_id}&document_id=eq.${job.document_id}&select=id,document_id,title,problem,summary,steps,warnings,evidence_map&limit=1`);
+    const version = versions[0];
+    if (!version) throw new Error("VERSION_NOT_FOUND");
+    const chunks = buildKnowledgeChunks({
+      title: version.title, problem: version.problem, summary: version.summary,
+      steps: version.steps, warnings: version.warnings,
+      sourceContent: sourceContentFromEvidenceMap(version.evidence_map),
+    });
+    const model = embeddingModel(env);
+    await indexKnowledgeVersion(<T>(path: string, init?: RequestInit) => supabaseRequest<T>(env, path, init), {
+      organizationId: job.organization_id,
+      documentId: job.document_id,
+      documentVersionId: job.document_version_id,
+      claimStartedAt: job.claim_started_at,
+      embeddingProvider: embeddingProvider(env),
+      embeddingModel: model,
+      chunks,
+      embed: (text) => createEmbedding({ env, text, purpose: "document" }),
+    });
+  } catch (error) {
+    const code = error instanceof EmbeddingProviderError ? `EMBEDDING_${error.status}` : "INDEXING_FAILED";
+    console.error("Knowledge indexing failed", { documentId: job.document_id, versionId: job.document_version_id, code });
+    const claimFilter = `knowledge_index_jobs?document_version_id=eq.${job.document_version_id}&status=eq.processing&started_at=eq.${encodeURIComponent(job.claim_started_at)}`;
+    await supabaseRequest<void>(env, claimFilter, {
+      method: "PATCH", headers: { prefer: "return=minimal" },
+      body: JSON.stringify({ status: "failed", last_error_code: code, next_attempt_at: new Date(Date.now() + 5 * 60_000).toISOString(), completed_at: null }),
+    }).catch(() => undefined);
+  }
+}
+
+async function processKnowledgeIndexQueue(env: Env): Promise<void> {
+  if (!vectorRagEnabled(env)) return;
+  const jobs = await supabaseRequest<KnowledgeIndexJob[]>(env, "rpc/claim_knowledge_index_jobs", { method: "POST", body: JSON.stringify({ p_limit: 1 }) });
+  for (const job of jobs) await processKnowledgeIndexJob(env, job);
+}
+
+async function enqueueKnowledgeIndex(env: Env, documentId: string): Promise<void> {
+  if (!vectorRagEnabled(env)) return;
+  try {
+    await supabaseRequest<string | null>(env, "rpc/enqueue_knowledge_index", { method: "POST", body: JSON.stringify({ p_document_id: documentId }) });
+  } catch (error) {
+    console.error("Knowledge indexing could not be queued", { documentId, code: "INDEX_QUEUE_UNAVAILABLE" }, error);
+  }
+}
+
+async function backfillKnowledgeIndexes(request: Request, env: Env): Promise<Response> {
+  if (!isSameOrigin(request, env)) return json({ code: "INVALID_ORIGIN" }, 403);
+  const session = await readSession(request, env);
+  if (!session?.organizationId || !canRunRagBackfill(env, session.email)) return json({ code: "DEVELOPER_REQUIRED" }, 403);
+  if (!vectorRagEnabled(env)) return json({ code: "RAG_NOT_CONFIGURED", message: "Vector retrieval is not configured." }, 503);
+  const queued = await supabaseRequest<number>(env, "rpc/enqueue_current_knowledge_indexes", { method: "POST", body: JSON.stringify({ p_organization_id: session.organizationId }) });
+  return json({ ok: true, queued }, 202);
+}
+
 async function chatKnowledge(request: Request, env: Env): Promise<Response> {
   if (!isSameOrigin(request, env)) return json({ code: "INVALID_ORIGIN", message: "Request origin was not accepted." }, 403);
   const session = await readSession(request, env);
@@ -2007,7 +2091,26 @@ async function chatKnowledge(request: Request, env: Env): Promise<Response> {
     const presentation = sourceContentText(sourceContentFromEvidenceMap(version?.evidence_map));
     return { id: document.id, title: version?.title || "Untitled knowledge", summary: version?.summary || "", problem: version?.problem || "", steps: version?.steps || [], warnings: version?.warnings || [], sourceText: [presentation, transcript].filter(Boolean).join("\n").slice(0, 12000) };
   });
-  const ranked = rankKnowledge(question, records);
+  const lexicalRanked = rankKnowledge(question, records);
+  let vectorRanked: ReturnType<typeof rankKnowledge> = [];
+  if (vectorRagEnabled(env) && session.organizationId) {
+    try {
+      const queryEmbedding = await createEmbedding({ env, text: question, purpose: "query" });
+      const matches = await retrieveKnowledgeChunks(<T>(path: string, init?: RequestInit) => supabaseRequest<T>(env, path, init), {
+        organizationId: session.organizationId, userId: session.appUserId, embedding: queryEmbedding, embeddingModel: embeddingModel(env),
+      });
+      const byDocument = new Map<string, typeof matches>();
+      for (const match of matches) byDocument.set(match.document_id, [...(byDocument.get(match.document_id) || []), match]);
+      vectorRanked = [...byDocument.entries()].flatMap(([documentId, chunks]) => {
+        const record = records.find(({ id }) => id === documentId);
+        if (!record) return [];
+        return [{ ...record, sourceText: chunks.map(({ content }) => content).join("\n\n"), score: Math.max(...chunks.map(({ similarity }) => similarity)) * 100 }];
+      }).sort((left, right) => right.score - left.score);
+    } catch (error) {
+      console.warn("Vector retrieval unavailable; using lexical fallback", error instanceof EmbeddingProviderError ? error.status : "SEARCH_FAILED");
+    }
+  }
+  const ranked = mergeRankedKnowledge(vectorRanked, lexicalRanked);
   if (ranked.length === 0) return json({ answer: "I could not find a matching answer in the published knowledge base.", citations: [], sources: [] });
   if (!llmConfigured(env)) return json({ code: "LLM_UNAVAILABLE", message: "Knowledge chat is temporarily unavailable." }, 503);
   const sourceCount = ranked.length;
@@ -2073,6 +2176,7 @@ async function revisePublishedDocument(request: Request, env: Env, documentId: s
     await supabaseRequest<void>(env, `documents?id=eq.${documentId}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ knowledge_label: label, updated_at: new Date().toISOString() }) });
     await supabaseRequest<void>(env, "audit_events", { method: "POST", headers: { prefer: "return=minimal" }, body: JSON.stringify({ organization_id: session.organizationId, actor_user_id: session.appUserId, action: "knowledge_label_updated", target_type: "document", target_id: documentId, metadata: { knowledge_label: label, version_id: versionId } }) });
   }
+  await enqueueKnowledgeIndex(env, documentId);
   return json({ ok: true, versionId });
 }
 
@@ -2252,6 +2356,7 @@ async function handleApi(request: Request, env: Env, waitUntil: (promise: Promis
   if (request.method === "GET" && pathname === "/api/processing-issues") return getProcessingIssues(request, env);
   if (request.method === "GET" && pathname === "/api/library") return getLibrary(request, env);
   if (request.method === "POST" && pathname === "/api/knowledge-chat") return chatKnowledge(request, env);
+  if (request.method === "POST" && pathname === "/api/admin/rag/backfill") return backfillKnowledgeIndexes(request, env);
   const sopAssetMatch = pathname.match(/^\/api\/sop-assets\/([0-9a-f-]+)\/([0-9a-f-]+)\/([^/]+)$/i);
   if (request.method === "GET" && sopAssetMatch) return getSopAsset(request, env, sopAssetMatch[1], sopAssetMatch[2], decodeURIComponent(sopAssetMatch[3]));
   const reviewMatch = pathname.match(/^\/api\/reviews\/([0-9a-f-]+)$/i);
@@ -2303,5 +2408,8 @@ export default {
       console.error("Unhandled API error", error);
       return json({ code: "INTERNAL_ERROR", message: "The request could not be completed." }, 500);
     }
+  },
+  async scheduled(_controller: unknown, env: Env, context: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
+    context.waitUntil(processKnowledgeIndexQueue(env));
   },
 };

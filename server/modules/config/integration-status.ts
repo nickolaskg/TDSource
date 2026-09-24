@@ -15,6 +15,10 @@ export interface IntegrationEnvironment {
   LLM_BASE_URL?: string;
   LLM_MODEL?: string;
   LLM_CONTEXT_TOKENS?: string;
+  EMBEDDING_PROVIDER?: string;
+  EMBEDDING_MODEL?: string;
+  EMBEDDING_BASE_URL?: string;
+  EMBEDDING_API_KEY?: string;
 }
 
 function isConfigured(...values: Array<string | undefined>): boolean {
@@ -41,6 +45,26 @@ export function llmConfigured(env: IntegrationEnvironment): boolean {
   return llmProvider(env) === "ollama" ? Boolean(llmBaseUrl(env)) : Boolean(geminiKey(env));
 }
 
+export function embeddingProvider(env: IntegrationEnvironment): "gemini" | "ollama" {
+  return env.EMBEDDING_PROVIDER?.trim().toLowerCase() === "ollama" ? "ollama" : "gemini";
+}
+
+export function embeddingModel(env: IntegrationEnvironment): string {
+  return env.EMBEDDING_MODEL?.trim() || (embeddingProvider(env) === "ollama" ? "nomic-embed-text" : "gemini-embedding-2");
+}
+
+export function embeddingBaseUrl(env: IntegrationEnvironment): string {
+  return (env.EMBEDDING_BASE_URL?.trim() || "http://127.0.0.1:11434").replace(/\/+$/, "");
+}
+
+export function embeddingKey(env: IntegrationEnvironment): string | undefined {
+  return env.EMBEDDING_API_KEY?.trim() || geminiKey(env);
+}
+
+export function embeddingConfigured(env: IntegrationEnvironment): boolean {
+  return embeddingProvider(env) === "ollama" ? Boolean(embeddingBaseUrl(env)) : Boolean(embeddingKey(env));
+}
+
 export function supabaseSecret(env: IntegrationEnvironment): string | undefined {
   return env.SUPABASE_SECRET_KEY?.trim() || env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 }
@@ -53,5 +77,8 @@ export function integrationStatus(env: IntegrationEnvironment) {
     llmConfigured: llmConfigured(env),
     llmProvider: llmProvider(env),
     llmModel: llmModel(env),
+    embeddingConfigured: embeddingConfigured(env),
+    embeddingProvider: embeddingProvider(env),
+    embeddingModel: embeddingModel(env),
   };
 }

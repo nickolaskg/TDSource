@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { integrationStatus } from "./integration-status.js";
+import { embeddingBaseUrl, embeddingConfigured, embeddingKey, embeddingModel, embeddingProvider, integrationStatus } from "./integration-status.js";
 
 const configured = {
   WEBEX_CLIENT_ID: "client",
@@ -23,5 +23,28 @@ describe("integrationStatus", () => {
 
   it("configures local Ollama without a hosted API key", () => {
     expect(integrationStatus({ ...configured, LLM_PROVIDER: "ollama", LLM_MODEL: "qwen2.5vl:3b" })).toMatchObject({ llmConfigured: true, llmProvider: "ollama", llmModel: "qwen2.5vl:3b" });
+  });
+
+  it("allows one Gemini key to power generation and embeddings", () => {
+    const env = { ...configured, GEMINI_AI_API: "generation-only" };
+    expect(embeddingConfigured(env)).toBe(true);
+    expect(integrationStatus(env)).toMatchObject({
+      llmConfigured: true,
+      embeddingConfigured: true,
+      embeddingProvider: "gemini",
+      embeddingModel: "gemini-embedding-2",
+    });
+  });
+
+  it("prefers a dedicated embedding key when configured", () => {
+    expect(embeddingKey({ GEMINI_AI_API: "shared", EMBEDDING_API_KEY: "embedding-only" })).toBe("embedding-only");
+  });
+
+  it("normalizes an Ollama embedding configuration", () => {
+    const env = { EMBEDDING_PROVIDER: " OLLAMA ", EMBEDDING_MODEL: "nomic-embed-text", EMBEDDING_BASE_URL: "http://host:11434///" };
+    expect(embeddingProvider(env)).toBe("ollama");
+    expect(embeddingModel(env)).toBe("nomic-embed-text");
+    expect(embeddingBaseUrl(env)).toBe("http://host:11434");
+    expect(embeddingConfigured(env)).toBe(true);
   });
 });

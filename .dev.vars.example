@@ -26,3 +26,13 @@ LLM_CONTEXT_TOKENS=16384
 # Gemini requires GEMINI_AI_API. Ollama normally requires no key.
 GEMINI_AI_API=
 LLM_API_KEY=
+
+# Embeddings have separate provider/model settings. EMBEDDING_API_KEY overrides
+# GEMINI_AI_API when separate credentials are needed. Changing the embedding
+# model requires rebuilding the stored vector index.
+EMBEDDING_PROVIDER=gemini
+EMBEDDING_MODEL=gemini-embedding-2
+EMBEDDING_BASE_URL=http://127.0.0.1:11434
+EMBEDDING_API_KEY=
+RAG_VECTOR_ENABLED=false
+RAG_BACKFILL_ADMIN_EMAILS=
