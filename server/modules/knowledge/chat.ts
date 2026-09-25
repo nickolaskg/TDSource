@@ -14,6 +14,14 @@ export interface RankedKnowledge extends KnowledgeRecord {
   score: number;
 }
 
+export interface ChatHistoryMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+const maxHistoryMessages = 6;
+const maxHistoryCharacters = 12000;
+
 const tokenPattern = /[a-z0-9]{2,}/gi;
 
 function tokens(value: string): string[] {
@@ -64,4 +72,30 @@ export function chatQuestion(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const question = value.trim();
   return question.length >= 2 && question.length <= 4000 ? question : null;
+}
+
+export function chatHistory(value: unknown): ChatHistoryMessage[] {
+  if (!Array.isArray(value)) return [];
+  let characters = 0;
+  const messages: ChatHistoryMessage[] = [];
+  for (const item of value.slice(-maxHistoryMessages)) {
+    if (!item || typeof item !== "object") continue;
+    const { role, content } = item as { role?: unknown; content?: unknown };
+    if ((role !== "user" && role !== "assistant") || typeof content !== "string") continue;
+    const normalized = content.trim().slice(0, 4000);
+    if (!normalized || characters + normalized.length > maxHistoryCharacters) break;
+    messages.push({ role, content: normalized });
+    characters += normalized.length;
+  }
+  return messages;
+}
+
+export function buildRetrievalQuery(question: string, history: readonly ChatHistoryMessage[]): string {
+  const recentQuestions = history.filter(({ role }) => role === "user").slice(-2).map(({ content }) => content);
+  return [...recentQuestions, question].join("\n").slice(-6000);
+}
+
+export function buildConversationContext(history: readonly ChatHistoryMessage[]): string {
+  if (!history.length) return "No earlier messages in this conversation.";
+  return history.map(({ role, content }) => `${role === "user" ? "User" : "Assistant"}: ${redactForLlm(content).sanitizedText}`).join("\n\n");
 }

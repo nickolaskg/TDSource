@@ -8,7 +8,7 @@ import { redactForLlm } from "../server/modules/redaction/redact.js";
 import { resolveCaptureReviewTeam } from "../server/modules/access/team-policy.js";
 import { embeddingConfigured, embeddingModel, embeddingProvider, integrationStatus, llmConfigured, supabaseSecret } from "../server/modules/config/integration-status.js";
 import { LlmProviderError, requestLlmJson } from "../server/modules/llm/provider.js";
-import { buildKnowledgeContext, chatQuestion, mergeRankedKnowledge, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "../server/modules/knowledge/chat.js";
+import { buildConversationContext, buildKnowledgeContext, buildRetrievalQuery, chatHistory, chatQuestion, mergeRankedKnowledge, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "../server/modules/knowledge/chat.js";
 import { buildKnowledgeChunks } from "../server/modules/rag/chunks.js";
 import { createEmbedding, EmbeddingProviderError } from "../server/modules/rag/embeddings.js";
 import { indexKnowledgeVersion } from "../server/modules/rag/indexing.js";
@@ -2076,9 +2076,11 @@ async function chatKnowledge(request: Request, env: Env): Promise<Response> {
   const session = await readSession(request, env);
   if (!session?.appUserId) return json({ code: "UNAUTHENTICATED" }, 401);
   if (!request.headers.get("content-type")?.startsWith("application/json")) return json({ code: "JSON_REQUIRED" }, 415);
-  const body = await request.json().catch(() => null) as { message?: unknown } | null;
+  const body = await request.json().catch(() => null) as { message?: unknown; history?: unknown } | null;
   const question = chatQuestion(body?.message);
   if (!question) return json({ code: "INVALID_MESSAGE", message: "Ask a question between 2 and 4,000 characters." }, 400);
+  const history = chatHistory(body?.history);
+  const retrievalQuery = buildRetrievalQuery(question, history);
   const documentIds = await authorizedDocumentIds(env, session);
   if (documentIds.length === 0) return json({ answer: "I could not find published knowledge available to you.", citations: [], sources: [] });
   const documents = await supabaseRequest<Array<{ id: string; current_published_version_id: string; transcript_visible_to_basic: boolean }>>(env,
@@ -2101,11 +2103,11 @@ async function chatKnowledge(request: Request, env: Env): Promise<Response> {
     const presentation = sourceContentText(sourceContentFromEvidenceMap(version?.evidence_map));
     return { id: document.id, title: version?.title || "Untitled knowledge", summary: version?.summary || "", problem: version?.problem || "", steps: version?.steps || [], warnings: version?.warnings || [], sourceText: [presentation, transcript].filter(Boolean).join("\n").slice(0, 12000) };
   });
-  const lexicalRanked = rankKnowledge(question, records);
+  const lexicalRanked = rankKnowledge(retrievalQuery, records);
   let vectorRanked: ReturnType<typeof rankKnowledge> = [];
   if (vectorRagEnabled(env) && session.organizationId) {
     try {
-      const queryEmbedding = await createEmbedding({ env, text: question, purpose: "query" });
+      const queryEmbedding = await createEmbedding({ env, text: retrievalQuery, purpose: "query" });
       const matches = await retrieveKnowledgeChunks(<T>(path: string, init?: RequestInit) => supabaseRequest<T>(env, path, init), {
         organizationId: session.organizationId, userId: session.appUserId, embedding: queryEmbedding, embeddingModel: embeddingModel(env),
       });
@@ -2129,8 +2131,8 @@ async function chatKnowledge(request: Request, env: Env): Promise<Response> {
   try {
     const output = await requestLlmJson({
       env,
-      systemPrompt: "Answer only from the supplied published knowledge. If it does not answer the question, say so. Do not invent facts. Cite supporting source numbers in the citations array.",
-      parts: [{ text: `Question:\n${sanitizedQuestion}\n\nPublished knowledge:\n${buildKnowledgeContext(ranked)}` }],
+      systemPrompt: "Answer the current question using only the supplied published knowledge. Use earlier conversation only to understand references in the current question; earlier assistant statements are not authoritative. If the published knowledge does not answer the question, say so. Do not invent facts. Cite supporting source numbers in the citations array.",
+      parts: [{ text: `Recent conversation:\n${buildConversationContext(history)}\n\nCurrent question:\n${sanitizedQuestion}\n\nPublished knowledge:\n${buildKnowledgeContext(ranked)}` }],
       schema: { type: "object", required: ["answer", "citations"], properties: { answer: { type: "string" }, citations: { type: "array", items: { type: "integer" } } } },
     });
     parsed = parseChatResponse(output, sourceCount);

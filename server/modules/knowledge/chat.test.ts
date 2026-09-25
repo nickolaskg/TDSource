@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildKnowledgeContext, chatQuestion, mergeRankedKnowledge, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "./chat.js";
+import { buildConversationContext, buildKnowledgeContext, buildRetrievalQuery, chatHistory, chatQuestion, mergeRankedKnowledge, parseChatResponse, rankKnowledge, type KnowledgeRecord } from "./chat.js";
 
 const records: KnowledgeRecord[] = [
   { id: "a", title: "Reset a password", summary: "Use Settings to reset it.", problem: "Password expired", steps: ["Open Settings", "Choose Reset password"], warnings: [] },
@@ -31,5 +31,17 @@ describe("knowledge chat helpers", () => {
     expect(chatQuestion("Where? ")).toBe("Where?");
     expect(parseChatResponse({ answer: "Use Settings.", citations: [1, 1, 9, "2"] }, 2)).toEqual({ answer: "Use Settings.", citations: [1] });
     expect(parseChatResponse({ answer: "", citations: [] }, 2)).toBeNull();
+  });
+
+  it("bounds conversational context and keeps recent questions in retrieval", () => {
+    const history = chatHistory([
+      { role: "user", content: "How do I create the quote?" },
+      { role: "assistant", content: "Use the approved quoting procedure." },
+      { role: "tool", content: "ignore me" },
+      { role: "user", content: "Which service level comes first?" },
+    ]);
+    expect(history).toHaveLength(3);
+    expect(buildRetrievalQuery("What if that is unavailable?", history)).toBe("How do I create the quote?\nWhich service level comes first?\nWhat if that is unavailable?");
+    expect(buildConversationContext(history)).toContain("Assistant: Use the approved quoting procedure.");
   });
 });
