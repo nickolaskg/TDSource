@@ -1,98 +1,109 @@
-import { AlertCircle, ArrowUp, BookOpen, LoaderCircle, MessageSquareText, RotateCcw } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { AlertCircle, ArrowUp, BookOpen, ChevronDown, ChevronUp, LoaderCircle, MessageSquareText, Plus } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import "./knowledge-chat.css";
 
-interface Citation {
-  id?: string;
-  title: string;
-  excerpt?: string;
-  url?: string;
-  source?: string;
+interface Citation { id?: string; title: string; excerpt?: string; url?: string; source?: string; }
+interface ChatResponse { answer?: string; citations?: Array<Citation | string>; sources?: Citation[]; message?: string; }
+interface ChatMessage { id: string; role: "user" | "assistant"; content: string; sources?: Citation[]; }
+interface SavedConversation { savedAt: string; messages: ChatMessage[]; }
+
+const previousConversationKey = "tds-knowledge-chat-previous";
+
+function messageId(role: ChatMessage["role"]): string { return `${role}-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+
+function readPreviousConversation(): SavedConversation | null {
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(previousConversationKey) || "null") as SavedConversation | null;
+    if (!value || !Array.isArray(value.messages) || !value.messages.some(({ role }) => role === "assistant")) return null;
+    return value;
+  } catch { return null; }
 }
 
-interface ChatResponse {
-  answer?: string;
-  citations?: Array<Citation | string>;
-  sources?: Citation[];
-  message?: string;
+function saveConversation(messages: ChatMessage[]): SavedConversation | null {
+  if (!messages.some(({ role }) => role === "assistant")) return null;
+  const conversation = { savedAt: new Date().toISOString(), messages };
+  try { window.sessionStorage.setItem(previousConversationKey, JSON.stringify(conversation)); } catch { /* The active chat still works when session storage is unavailable. */ }
+  return conversation;
+}
+
+function MessageText({ content }: { content: string }) {
+  return <div className="knowledge-message-copy">{content.split(/\n{2,}/).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>)}</div>;
+}
+
+function MessageSources({ sources = [] }: { sources?: Citation[] }) {
+  if (!sources.length) return null;
+  return <div className="knowledge-message-sources"><span>Sources</span><ul>{sources.map((source, index) => <li key={source.id || `${source.title}-${index}`}><BookOpen size={14} />{source.url ? <a href={source.url}>{source.title}</a> : source.title}</li>)}</ul></div>;
 }
 
 export function KnowledgeChatPage() {
   const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState<string | null>(null);
-  const [citations, setCitations] = useState<Citation[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [previous, setPrevious] = useState<SavedConversation | null>(() => readPreviousConversation());
+  const [showPrevious, setShowPrevious] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const messagesRef = useRef(messages);
+  const conversationRef = useRef<HTMLElement | null>(null);
+  messagesRef.current = messages;
+
+  useEffect(() => () => { saveConversation(messagesRef.current); }, []);
+  useEffect(() => {
+    const conversation = conversationRef.current;
+    if (!conversation) return;
+    const frame = window.requestAnimationFrame(() => conversation.scrollTo({ top: conversation.scrollHeight, behavior: "smooth" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, busy]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const prompt = question.trim();
     if (!prompt || busy) return;
-    setBusy(true);
-    setError("");
-    setAnswer(null);
-    setCitations([]);
+    const userMessage: ChatMessage = { id: messageId("user"), role: "user", content: prompt };
+    const priorMessages = messages;
+    setMessages([...priorMessages, userMessage]);
+    setQuestion(""); setBusy(true); setError("");
     try {
       const response = await fetch("/api/knowledge-chat", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ message: prompt }),
+        method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ message: prompt, history: priorMessages.map(({ role, content }) => ({ role, content })) }),
       });
       const payload = await response.json() as ChatResponse;
       if (!response.ok) throw new Error(payload.message || "The knowledge answer could not be generated.");
       if (!payload.answer?.trim()) throw new Error("No answer was returned. Try a more specific question.");
-      setAnswer(payload.answer);
-      // The API returns rich `sources`; keep a citation fallback for older responses.
-      setCitations(payload.sources || (Array.isArray(payload.citations) ? payload.citations.flatMap((citation) => typeof citation === "object" ? [citation] : []) : []));
+      const sources = payload.sources || (Array.isArray(payload.citations) ? payload.citations.flatMap((citation) => typeof citation === "object" ? [citation] : []) : []);
+      setMessages((current) => [...current, { id: messageId("assistant"), role: "assistant", content: payload.answer!.trim(), sources }]);
     } catch (cause) {
+      setMessages(priorMessages); setQuestion(prompt);
       setError(cause instanceof Error ? cause.message : "The knowledge answer could not be generated.");
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
 
-  const reset = () => { setQuestion(""); setAnswer(null); setCitations([]); setError(""); };
+  const newChat = () => {
+    const saved = saveConversation(messages);
+    if (saved) setPrevious(saved);
+    setMessages([]); setQuestion(""); setError(""); setShowPrevious(false);
+  };
 
-  return (
-    <div className="page knowledge-chat-page">
-      <header className="page-heading knowledge-chat-heading">
-        <div>
-          <span className="eyebrow">Answers from approved knowledge</span>
-          <h1>Knowledge chat</h1>
-          <p>Ask a question and get a grounded answer from the documents you can access.</p>
-        </div>
-        {(answer || error) && <button className="secondary-button" type="button" onClick={reset}><RotateCcw size={16} /> New question</button>}
-      </header>
+  const previousTitle = previous?.messages.find(({ role }) => role === "user")?.content || "Previous conversation";
+  const previousQuestions = previous?.messages.filter(({ role }) => role === "user").length || 0;
 
-      <section className={`panel knowledge-chat-composer ${busy ? "is-loading" : ""}`} aria-busy={busy}>
-        <div className="panel-heading">
-          <div><h2>Ask the knowledge base</h2><p>Answers use published, non-deprecated guidance and include source references.</p></div>
-          <MessageSquareText size={21} aria-hidden="true" />
-        </div>
-        <form onSubmit={submit}>
-          <label htmlFor="knowledge-question">Your question</label>
-          <textarea id="knowledge-question" aria-describedby="knowledge-question-help" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Example: How do I create a CCWR quote for Dell EMC?" rows={4} disabled={busy} />
-          <div className="knowledge-chat-form-footer">
-            <span id="knowledge-question-help">Use specific terms for the best result.</span>
-            <button className="primary-button" type="submit" disabled={busy || !question.trim()}>{busy ? <><LoaderCircle className="spin" size={17} /> Searching knowledge…</> : <>Ask question <ArrowUp size={17} /></>}</button>
-          </div>
-        </form>
-      </section>
+  return <div className="page knowledge-chat-page">
+    <header className="page-heading knowledge-chat-heading"><div><span className="eyebrow">Answers from approved knowledge</span><h1>Knowledge chat</h1><p>Ask follow-up questions while you stay on this page. Every answer is checked against the documents you can access.</p></div>{messages.length > 0 && <button className="secondary-button" type="button" onClick={newChat}><Plus size={16} /> New chat</button>}</header>
 
-      {error && <div className="knowledge-chat-alert" role="alert"><AlertCircle size={18} /><span>{error}</span></div>}
-      {busy && <div className="knowledge-chat-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={20} /><span>Searching approved knowledge and preparing an answer…</span></div>}
+    <section className="knowledge-conversation" ref={conversationRef} aria-live="polite" aria-label="Current knowledge conversation">
+      {messages.length === 0 && <div className="knowledge-chat-welcome"><MessageSquareText size={24} aria-hidden="true" /><div><h2>Ask the knowledge base</h2><p>Start with a question about published, non-deprecated guidance. You can ask follow-up questions after the first answer.</p></div></div>}
+      {messages.map((message) => <article className={`knowledge-message knowledge-message-${message.role}`} key={message.id}><div className="knowledge-message-label">{message.role === "user" ? "You" : "Knowledge assistant"}</div><MessageText content={message.content} /><MessageSources sources={message.sources} /></article>)}
+      {busy && <div className="knowledge-chat-status" role="status"><LoaderCircle className="spin" size={20} /><span>Searching approved knowledge and preparing an answer…</span></div>}
+    </section>
 
-      {answer && <section className="knowledge-chat-result" aria-live="polite">
-        <article className="panel knowledge-answer">
-          <div className="knowledge-result-heading"><div><span className="eyebrow">Grounded answer</span><h2>Here’s what we found</h2></div><BookOpen size={21} aria-hidden="true" /></div>
-          <div className="knowledge-answer-copy">{answer.split(/\n{2,}/).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>)}</div>
-        </article>
-        <aside className="panel knowledge-sources" aria-label="Answer sources">
-          <div className="panel-heading"><div><span className="eyebrow">Source references</span><h2>Sources</h2><p>{citations.length ? `${citations.length} source${citations.length === 1 ? "" : "s"}` : "No source references returned"}</p></div></div>
-          {citations.length > 0 ? <ol>{citations.map((citation, index) => <li key={citation.id || `${citation.title}-${index}`}><BookOpen size={16} /><div><strong>{citation.url ? <a href={citation.url}>{citation.title}</a> : citation.title}</strong>{citation.source && <small>{citation.source}</small>}{citation.excerpt && <p>{citation.excerpt}</p>}</div></li>)}</ol> : <p className="knowledge-no-sources">The answer did not include source references.</p>}
-        </aside>
-      </section>}
-    </div>
-  );
+    {error && <div className="knowledge-chat-alert" role="alert"><AlertCircle size={18} /><span>{error}</span></div>}
+
+    <form className="knowledge-chat-composer" onSubmit={submit} aria-busy={busy}>
+      <label htmlFor="knowledge-question">Ask a question</label>
+      <div className="knowledge-composer-row"><textarea id="knowledge-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={messages.length ? "Ask a follow-up question…" : "How do I create a CCWR quote for Dell EMC?"} rows={2} disabled={busy} /><button className="primary-button" type="submit" aria-label="Send question" disabled={busy || !question.trim()}>{busy ? <LoaderCircle className="spin" size={18} /> : <ArrowUp size={18} />}</button></div>
+      <span className="knowledge-composer-help">Answers use approved knowledge and include sources when available.</span>
+    </form>
+
+    {previous && <section className="panel previous-conversation-card"><button type="button" onClick={() => setShowPrevious((visible) => !visible)} aria-expanded={showPrevious}><div><span className="eyebrow">Previous conversation</span><strong>{previousTitle}</strong><small>{previousQuestions} question{previousQuestions === 1 ? "" : "s"} · Saved for this browser session</small></div>{showPrevious ? <ChevronUp size={20} /> : <ChevronDown size={20} />}</button>{showPrevious && <div className="previous-conversation-transcript">{previous.messages.map((message) => <article className={`knowledge-message knowledge-message-${message.role}`} key={message.id}><div className="knowledge-message-label">{message.role === "user" ? "You" : "Knowledge assistant"}</div><MessageText content={message.content} /><MessageSources sources={message.sources} /></article>)}</div>}</section>}
+  </div>;
 }

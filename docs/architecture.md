@@ -124,6 +124,15 @@ models without changing application code. Responses include
 the approved document titles used as citations and never expose raw hidden
 transcripts to Basic users.
 
+The browser keeps one active conversation only while the Knowledge Chat route is
+open. Each turn reruns authorized retrieval and sends at most the six most recent
+messages (12,000 characters total) as conversational context; retrieval itself
+uses the current question plus at most two earlier user questions. Navigating
+away closes the active conversation. The completed transcript is retained only
+in that browser tab's `sessionStorage` as a read-only previous-conversation
+reference, and a return visit always begins with a fresh chat. TDS does not store
+chat transcripts in Supabase in this milestone.
+
 The first slice uses ranked retrieval over published version fields and visible
 source messages so existing approved content works before embeddings are loaded.
 Uploaded SOPs also store validated, binary-free `source_content` in the document
