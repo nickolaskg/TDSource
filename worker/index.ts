@@ -1985,14 +1985,16 @@ async function getLibrary(request: Request, env: Env): Promise<Response> {
   const attributionIds = [...new Set(documents.flatMap(({ originally_approved_by_user_id, last_updated_by_user_id }) => [originally_approved_by_user_id, last_updated_by_user_id]).filter((id): id is string => Boolean(id)))];
   const [versions, spaces, favorites, attributionUsers] = await Promise.all([
     supabaseRequest<Array<{ id: string; title: string; summary: string }>>(env, `document_versions?id=${inFilter(documents.map(({ current_published_version_id }) => current_published_version_id))}&select=id,title,summary`),
-    supabaseRequest<Array<{ id: string; display_name: string }>>(env, `source_spaces?id=${inFilter([...new Set(documents.map(({ source_space_id }) => source_space_id))])}&select=id,display_name`),
+    supabaseRequest<Array<{ id: string; display_name: string; provider: string }>>(env, `source_spaces?id=${inFilter([...new Set(documents.map(({ source_space_id }) => source_space_id))])}&select=id,display_name,provider`),
     supabaseRequest<Array<{ document_id: string }>>(env, `favorites?user_id=eq.${session.appUserId}&document_id=${inFilter(documents.map(({ id }) => id))}&select=document_id`),
     attributionIds.length ? supabaseRequest<Array<{ id: string; display_name: string }>>(env, `users?id=${inFilter(attributionIds)}&select=id,display_name`) : Promise.resolve([]),
   ]);
   return json({ favoriteIds: favorites.map(({ document_id }) => document_id), items: documents.map((document) => {
     const version = versions.find(({ id }) => id === document.current_published_version_id);
+    const sourceSpace = spaces.find(({ id }) => id === document.source_space_id);
     return { id: document.id, title: version?.title || "Untitled", summary: version?.summary || "", workflowState: "published", label: document.knowledge_label,
-      sourceSpace: spaces.find(({ id }) => id === document.source_space_id)?.display_name || "Webex space", teamNames: session.teamRoles?.map(({ teamName }) => teamName) || [], categories: [], updatedAt: document.updated_at, transcriptVisible: document.transcript_visible_to_basic, organizationWide: document.organization_wide,
+      contentType: sourceSpace?.provider === "tdsource-sop-upload" ? "sop" : "question",
+      sourceSpace: sourceSpace?.display_name || "Webex space", teamNames: session.teamRoles?.map(({ teamName }) => teamName) || [], categories: [], updatedAt: document.updated_at, transcriptVisible: document.transcript_visible_to_basic, organizationWide: document.organization_wide,
       originallyApprovedBy: attributionUsers.find(({ id }) => id === document.originally_approved_by_user_id)?.display_name || null,
       lastUpdatedBy: attributionUsers.find(({ id }) => id === document.last_updated_by_user_id)?.display_name || null };
   }) });
@@ -2152,7 +2154,7 @@ async function getLibraryDetail(request: Request, env: Env, documentId: string):
   const [versions, spaces, attributionUsers] = await Promise.all([
     supabaseRequest<Array<{ id: string; source_snapshot_id: string; title: string; problem: string; summary: string; steps: string[]; warnings: string[]; evidence_map: unknown; version_number: number }>>(env,
       `document_versions?id=eq.${document.current_published_version_id}&select=id,source_snapshot_id,title,problem,summary,steps,warnings,evidence_map,version_number&limit=1`),
-    supabaseRequest<Array<{ display_name: string }>>(env, `source_spaces?id=eq.${document.source_space_id}&select=display_name&limit=1`),
+    supabaseRequest<Array<{ display_name: string; provider: string }>>(env, `source_spaces?id=eq.${document.source_space_id}&select=display_name,provider&limit=1`),
     attributionIds.length ? supabaseRequest<Array<{ id: string; display_name: string }>>(env, `users?id=${inFilter(attributionIds)}&select=id,display_name`) : Promise.resolve([]),
   ]);
   const version = versions[0]; if (!version) return json({ code: "NOT_FOUND" }, 404);
@@ -2162,7 +2164,7 @@ async function getLibraryDetail(request: Request, env: Env, documentId: string):
     `source_messages?source_snapshot_id=eq.${version.source_snapshot_id}&select=provider_message_id,author_display_name,source_markdown,sent_at,ordinal&order=ordinal.asc`) : [];
   const canManage = staff && (await authorizedDocumentIds(env, session, "revise")).includes(documentId);
   const canManageVisibility = session.teamRoles?.some(({ teamId, role }) => teamId === document.review_team_id && (role === "moderator" || role === "admin")) || false;
-  return json({ id: document.id, label: document.knowledge_label, sourceSpace: spaces[0]?.display_name || "Webex space", updatedAt: document.updated_at, transcriptVisible, canManage, canManageVisibility, organizationWide: document.organization_wide,
+  return json({ id: document.id, label: document.knowledge_label, contentType: spaces[0]?.provider === "tdsource-sop-upload" ? "sop" : "question", sourceSpace: spaces[0]?.display_name || "Webex space", updatedAt: document.updated_at, transcriptVisible, canManage, canManageVisibility, organizationWide: document.organization_wide,
     originallyApprovedBy: attributionUsers.find(({ id }) => id === document.originally_approved_by_user_id)?.display_name || null,
     lastUpdatedBy: attributionUsers.find(({ id }) => id === document.last_updated_by_user_id)?.display_name || null,
     draft: version, sourceContent: sourceContentForClient(documentId, version.id, sourceContentFromEvidenceMap(version.evidence_map)), sourceMessages });
