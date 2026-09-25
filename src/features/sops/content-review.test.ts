@@ -61,7 +61,7 @@ describe("faithful SOP review", () => {
   it("sends optional AI edits only after selection and preserves documents and notes", () => {
     const file = new File(["sample"], "sample.docx");
     const form = sopUploadForm([file], "team", "Title", "Do not omit exceptions", false);
-    expect(form.has("suggestEdits")).toBe(false); expect(form.get("sampleConfirmed")).toBe("true");
+    expect(form.has("suggestEdits")).toBe(false); expect(form.has("sampleConfirmed")).toBe(false);
     expect(form.get("notes")).toBe("Do not omit exceptions"); expect((form.get("files") as File).name).toBe("sample.docx");
     expect(sopUploadForm([file], "team", "Title", "", true).get("suggestEdits")).toBe("true");
   });

@@ -13,7 +13,7 @@ export function resolveSuggestion(content: SopContent, index: number, accept: bo
 
 export function sopUploadForm(files: File[], teamId: string, title: string, notes: string, suggestEdits: boolean): FormData {
   const form = new FormData();
-  form.set("teamId", teamId); form.set("title", title); form.set("notes", notes); form.set("sampleConfirmed", "true");
+  form.set("teamId", teamId); form.set("title", title); form.set("notes", notes);
   if (suggestEdits) form.set("suggestEdits", "true");
   files.forEach((file) => form.append("files", file, file.name));
   return form;

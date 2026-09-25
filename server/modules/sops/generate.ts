@@ -47,7 +47,7 @@ export function localOrigin(value: string): boolean {
 // Count the stream, not just Content-Length, before buffering a multipart upload.
 async function readForm(request: Request): Promise<FormData> {
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data;")) throw new SopInputError("Choose documents using the upload form.");
-  if (Number(request.headers.get("content-length")) > MAX_REQUEST) throw new SopInputError("This upload exceeds the 25 MB local request limit.");
+  if (Number(request.headers.get("content-length")) > MAX_REQUEST) throw new SopInputError("This upload exceeds the 25 MB request limit.");
   const reader = request.body?.getReader();
   if (!reader) throw new SopInputError("The upload is empty.");
   const chunks: Uint8Array<ArrayBuffer>[] = [];
@@ -57,7 +57,7 @@ async function readForm(request: Request): Promise<FormData> {
       const { value, done } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > MAX_REQUEST) { await reader.cancel(); throw new SopInputError("This upload exceeds the 25 MB local request limit."); }
+      if (bytes > MAX_REQUEST) { await reader.cancel(); throw new SopInputError("This upload exceeds the 25 MB request limit."); }
       chunks.push(new Uint8Array(value));
     }
     return await new Response(new Blob(chunks), { headers: { "content-type": request.headers.get("content-type")! } }).formData();
@@ -87,7 +87,7 @@ export async function generateSop(
     if (signal?.aborted) throw new SopProviderError("SOP import was canceled. Your documents and notes are unchanged.", 499);
     const prepared = await prepareDocument(file, `D${index + 1}`);
     preparedSize += JSON.stringify(prepared.parts).length;
-    if (preparedSize > 40 * 1024 * 1024) throw new SopInputError("The extracted documents exceed the local AI request limit. Upload fewer or smaller documents.");
+    if (preparedSize > 40 * 1024 * 1024) throw new SopInputError("The extracted documents exceed the AI request limit. Upload fewer or smaller documents.");
     parts.push(...prepared.parts); sources.push(prepared.source); blocks.push(...(prepared.blocks || []));
   }
   if (notes.trim()) {
@@ -165,7 +165,7 @@ async function requestFaithfulAi(parts: LlmPart[], env: SopEnvironment, signal: 
       timings.providerStatus = cause.status;
       if (cause.message.includes("incomplete response")) throw new SopProviderError("Incomplete transcription", 502);
       if (cause.status === 415) throw new SopProviderError(cause.message, 400);
-      if (cause.status === 401 || cause.status === 403) throw new SopProviderError(`${providerName} rejected the configured credentials. Update the local LLM settings, restart the app, and try again.`, 503);
+      if (cause.status === 401 || cause.status === 403) throw new SopProviderError(`${providerName} rejected the configured credentials. Update the AI provider credentials and try again.`, 503);
       if (cause.status === 429) throw new SopProviderError(`${providerName}'s quota or rate limit was reached. Check the provider account or wait before trying again.`, 503);
       if ([500, 502, 503].includes(cause.status)) throw new SopProviderError(`${providerName} is temporarily unavailable or busy. Your document was read successfully. Wait a moment, then try again.`, 503);
       if (cause.status === 504) throw new SopProviderError(`${providerName} timed out while generating the draft. Your document was read successfully. Please try again.`, 504);
@@ -179,15 +179,13 @@ export async function handleSopRequest(
   request: Request, env: SopEnvironment,
   readSession: () => Promise<SopSession | null>,
 ): Promise<Response> {
-  const local = localOrigin(request.url) && localOrigin(env.APP_ORIGIN || "");
-  if (!local) return error("SOP generation is currently available in local development only.", 403);
   if (request.method === "POST" && request.headers.get("origin") !== new URL(request.url).origin) return error("Request origin was not accepted.", 403);
   const session = await readSession();
   if (!session?.appUserId) return error("Sign in again to create an SOP.", 401);
   const teams = session.accountStatus === "active" ? session.teamRoles?.filter(({ role }) => role === "admin" || role === "moderator") || [] : [];
   if (!teams.length) return error("An active Moderator or Admin role is required.", 403);
   const aiAvailable = llmConfigured(env);
-  if (request.method === "GET") return json({ available: aiAvailable, aiAvailable, teams, provider: llmProvider(env), model: llmModel(env), providerTimeoutSeconds: SOP_PROVIDER_TIMEOUT_MS / 1000, message: aiAvailable ? "Ready for local testing with non-sensitive sample documents." : "Configure an AI provider before uploading SOP documents." });
+  if (request.method === "GET") return json({ available: aiAvailable, aiAvailable, teams, provider: llmProvider(env), model: llmModel(env), providerTimeoutSeconds: SOP_PROVIDER_TIMEOUT_MS / 1000, message: aiAvailable ? "Ready to import SOP documents." : "Configure an AI provider before uploading SOP documents." });
   if (running.has(session.appUserId)) return error("An SOP is already being generated for your account. Wait for it to finish before retrying.", 429);
   running.add(session.appUserId);
   const requestId = crypto.randomUUID();
@@ -211,7 +209,6 @@ export async function handleSopRequest(
     const title = form.get("title") ?? "";
     const notes = form.get("notes") ?? "";
     if (typeof title !== "string" || typeof notes !== "string" || title.length > SOP_LIMITS.title || notes.length > SOP_LIMITS.notes) return error("The title or notes exceed the allowed length.", 400);
-    if (form.get("sampleConfirmed") !== "true") return error("Use non-sensitive sample documents for this local preview.", 400);
     const uploads = form.getAll("files");
     if (uploads.some((file) => typeof file === "string")) return error("Choose valid document files.", 400);
     const files = uploads as File[];

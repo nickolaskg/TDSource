@@ -2267,9 +2267,7 @@ async function getWebexMessages(request: Request, env: Env): Promise<Response> {
 }
 
 async function submitSopReview(request: Request, env: Env): Promise<Response> {
-  if (!localOrigin(request.url) || !localOrigin(env.APP_ORIGIN || "") || !isSameOrigin(request, env)) {
-    return json({ code: "INVALID_ORIGIN", message: "SOP review submission is currently available in local development only." }, 403);
-  }
+  if (!isSameOrigin(request, env)) return json({ code: "INVALID_ORIGIN", message: "Request origin was not accepted." }, 403);
   const session = await readSession(request, env);
   if (!session?.appUserId) return json({ code: "UNAUTHENTICATED", message: "Sign in again before submitting an SOP." }, 401);
   if (session.accountStatus !== "active" || !session.teamRoles?.some(({ role }) => role === "moderator" || role === "admin")) {

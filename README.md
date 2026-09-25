@@ -31,6 +31,6 @@ Development and production both load authoritative server data. Empty integratio
 
 See `docs/architecture.md` for module boundaries and `docs/requirements-decisions.md` for reconciled requirements and unresolved product decisions.
 
-## SOP local preview
+## SOP document import
 
-Admins and Moderators can open **Create SOP** to upload PDF, DOCX, or XLSX sample documents and generate an editable procedure using the existing Gemini integration. See docs/sop-document-upload.md for local setup, supported content, limits, and the next milestone.
+Admins and Moderators can open **Create SOP** in local or production environments to upload PDF, DOCX, or XLSX documents and generate an editable procedure using the configured AI provider. Generated drafts remain unpublished until they are submitted to the durable review queue and approved. See docs/sop-document-upload.md for provider setup, supported content, and limits.
