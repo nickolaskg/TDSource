@@ -533,6 +533,15 @@ h3 { font-size: var(--tds-h3-size); line-height: var(--tds-h3-leading); }
 .sidebar-topline { min-height: 0; padding: 0 0 var(--tds-space-4); }
 .sidebar-topline:empty { display: none; }
 
+@media (max-width: 1050px) and (min-width: 768px) {
+  .topbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--tds-space-3); padding-inline: var(--tds-space-4); }
+  .topbar > .brand-mark { grid-column: 1; }
+  .topbar > .global-search { grid-column: 2; min-width: 0; }
+  .topbar > .account-menu-wrap { grid-column: 3; }
+  .topbar .brand-copy, .topbar .brand-divider, .topbar .profile-copy, .topbar .profile-chip > svg { display: none; }
+  .brand-logo { width: 112px; }
+}
+
 @media (max-width: 767px) {
   .topbar { display: flex; }
   .topbar > .brand-mark { order: 0; }
