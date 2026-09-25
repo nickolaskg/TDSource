@@ -43,9 +43,16 @@ export function KnowledgeChatPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const messagesRef = useRef(messages);
+  const conversationRef = useRef<HTMLElement | null>(null);
   messagesRef.current = messages;
 
   useEffect(() => () => { saveConversation(messagesRef.current); }, []);
+  useEffect(() => {
+    const conversation = conversationRef.current;
+    if (!conversation) return;
+    const frame = window.requestAnimationFrame(() => conversation.scrollTo({ top: conversation.scrollHeight, behavior: "smooth" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, busy]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -83,7 +90,7 @@ export function KnowledgeChatPage() {
   return <div className="page knowledge-chat-page">
     <header className="page-heading knowledge-chat-heading"><div><span className="eyebrow">Answers from approved knowledge</span><h1>Knowledge chat</h1><p>Ask follow-up questions while you stay on this page. Every answer is checked against the documents you can access.</p></div>{messages.length > 0 && <button className="secondary-button" type="button" onClick={newChat}><Plus size={16} /> New chat</button>}</header>
 
-    <section className="knowledge-conversation" aria-live="polite" aria-label="Current knowledge conversation">
+    <section className="knowledge-conversation" ref={conversationRef} aria-live="polite" aria-label="Current knowledge conversation">
       {messages.length === 0 && <div className="knowledge-chat-welcome"><MessageSquareText size={24} aria-hidden="true" /><div><h2>Ask the knowledge base</h2><p>Start with a question about published, non-deprecated guidance. You can ask follow-up questions after the first answer.</p></div></div>}
       {messages.map((message) => <article className={`knowledge-message knowledge-message-${message.role}`} key={message.id}><div className="knowledge-message-label">{message.role === "user" ? "You" : "Knowledge assistant"}</div><MessageText content={message.content} /><MessageSources sources={message.sources} /></article>)}
       {busy && <div className="knowledge-chat-status" role="status"><LoaderCircle className="spin" size={20} /><span>Searching approved knowledge and preparing an answer…</span></div>}
