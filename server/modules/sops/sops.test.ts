@@ -13,11 +13,12 @@ const docx = () => office("sample.docx", { "word/document.xml": '<w:document><w:
 const draft = { title: "Create a team", summary: "Create a workspace for a team.", prerequisites: ["Sign in."], steps: [{ title: "Open Settings", instruction: "Choose Create team.", sourceIds: ["D1"] }], warnings: [], openQuestions: [] };
 const moderator: SopSession = { appUserId: "user-1", accountStatus: "active", teamRoles: [{ teamId: "team-1", teamName: "Support", role: "moderator" }, { teamId: "team-2", teamName: "Sales", role: "basic" }] };
 const env = { APP_ORIGIN: "http://localhost:5173", GEMINI_AI_API: "test-key", LLM_MODEL: "configured-model" };
-function upload(options: { teamId?: string; file?: File; confirmed?: string; origin?: string; notes?: string; suggestEdits?: boolean } = {}) {
+function upload(options: { teamId?: string; file?: File; origin?: string; url?: string; notes?: string; suggestEdits?: boolean } = {}) {
   const form = new FormData();
-  form.set("teamId", options.teamId || "team-1"); form.set("sampleConfirmed", options.confirmed ?? "true");
+  form.set("teamId", options.teamId || "team-1");
   form.set("notes", options.notes || ""); form.set("suggestEdits", String(options.suggestEdits ?? false)); form.append("files", options.file || docx());
-  return new Request("http://localhost:5173/api/sops/generate", { method: "POST", headers: { origin: options.origin || env.APP_ORIGIN }, body: form });
+  const url = options.url || "http://localhost:5173/api/sops/generate";
+  return new Request(url, { method: "POST", headers: { origin: options.origin || new URL(url).origin }, body: form });
 }
 afterEach(() => vi.unstubAllGlobals());
 
@@ -95,14 +96,16 @@ describe("SOP access and generation", () => {
     expect((await handleSopRequest(upload({ teamId: "team-2" }), env, async () => moderator)).status).toBe(403);
     expect(provider).not.toHaveBeenCalled();
   });
-  it("rejects production and cross-origin requests before authentication", async () => {
+  it("accepts production requests and rejects cross-origin requests before authentication", async () => {
     const session = vi.fn(async () => moderator);
     expect((await handleSopRequest(upload({ origin: "https://evil.example" }), env, session)).status).toBe(403);
-    expect((await handleSopRequest(upload(), { ...env, APP_ORIGIN: "https://tds.example" }, session)).status).toBe(403);
     expect(session).not.toHaveBeenCalled();
+    const provider = vi.fn(async () => Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify({ pdfBlocks: [], suggestions: [], openQuestions: [] }) }] } }] }));
+    vi.stubGlobal("fetch", provider);
+    const productionEnv = { ...env, APP_ORIGIN: "https://tds.example" };
+    expect((await handleSopRequest(upload({ url: "https://tds.example/api/sops/generate" }), productionEnv, async () => moderator)).status).toBe(200);
   });
-  it("requires test-content acknowledgement and rejects oversized multipart bodies", async () => {
-    expect((await handleSopRequest(upload({ confirmed: "false" }), env, async () => moderator)).status).toBe(400);
+  it("rejects oversized multipart bodies", async () => {
     const request = upload(); request.headers.set("content-length", String(100 * 1024 * 1024));
     expect((await handleSopRequest(request, env, async () => moderator)).status).toBe(400);
   });

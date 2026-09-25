@@ -1,4 +1,4 @@
-# SOP document upload: local generation milestone
+# SOP document upload and review
 
 Branch: `feature/sop-document-upload`.
 
@@ -12,7 +12,7 @@ procedure using the configured `LLM_PROVIDER` and `LLM_MODEL`.
 - Extracted document text and notes are sent to the configured AI provider for SOP parsing. PDF pages
   are sent with their visual content. DOCX paragraphs/tables and XLSX
   sheet/cell values are first extracted and normalized on the server. Supported
-  embedded PNG/JPEG/WebP images remain in the local review draft but are not sent
+  embedded PNG/JPEG/WebP images remain in the browser review draft but are not sent
   for Office-only AI validation because the current structured response does not
   consume them. Optional wording suggestions remain separately controlled;
   the provider parse is no longer optional. Office image placement, charts,
@@ -27,7 +27,7 @@ procedure using the configured `LLM_PROVIDER` and `LLM_MODEL`.
   attachments to Supabase. After review, **Submit for review** persists the
   generated markdown snapshot, draft version, source reference, and selected team
   to Supabase, invalidates the review cache, and opens that item in the durable
-  moderator review queue. Leaving the page before submission discards the local
+  moderator review queue. Leaving the page before submission discards the browser
   draft; refreshing or signing out after submission does not.
 - Submission stores the validated, binary-free source blocks separately from the
   editable AI draft. Review and library pages use those blocks for faithful text,
@@ -36,7 +36,7 @@ procedure using the configured `LLM_PROVIDER` and `LLM_MODEL`.
   `source_messages.source_markdown` remains the immutable transcript context
   where transcript visibility permits it.
 
-## Local testing and access
+## Provider configuration and access
 
 Run `pnpm dev` and sign in through the existing local Webex flow. The local
 `.dev.vars` needs the existing authentication/Supabase settings and local
@@ -63,21 +63,23 @@ Apply migrations `202609210018_submit_sop_review.sql` and
 local UI requires real authentication;
 there is no bypass account or mock product data.
 
-The SOP endpoints are available only when both the request URL and configured
-application origin are loopback hosts. Production generation is intentionally
-disabled during this milestone. Use non-sensitive synthetic/sample documents,
-including all screenshots. Existing text redaction applies to extracted Office
-text and notes; PDF/image redaction is not implemented. The confirmation checkbox
-is a test-content reminder, not a substitute for organization approval.
+The SOP endpoints are available in local development and production. Every
+request requires the normal signed TDS session. Generation is limited to active
+Moderators and Admins in the selected team, and mutations require a same-origin
+browser request. Provider credentials remain server-only. Existing text
+redaction applies to extracted Office text and notes; PDF/image redaction is not
+implemented, so provider handling must remain consistent with the organization's
+approved AI data policy.
 
 Server checks include same-origin submission, fresh active team roles before
 generation and before returning the draft, file signatures/container checks,
 bounded multipart reads, expanded ZIP/XML limits, macro/object rejection, and
 validated structured output/source references. Only one request per account per
-Worker isolate can be in progress. The local concurrency guard is not a durable
-production rate limiter. Provider errors never return raw response bodies.
+Worker isolate can be in progress. The isolate-level concurrency guard prevents
+duplicate work within one Worker instance; provider quotas remain the production
+rate boundary. Provider errors never return raw response bodies.
 
-Limits for this synchronous local endpoint: 5 documents, 25 MB per file and
+Limits for this synchronous endpoint: 5 documents, 25 MB per file and
 25 MB total uploaded bytes, 20 embedded images per Office document, 6,000 note
 characters, 180-second total provider deadline. The aggregate transport limit is not a
 decision about the eventual production attachment policy. Encrypted files,
@@ -86,10 +88,9 @@ are rejected with conversion guidance. Word documents with unresolved tracked ch
 
 ## Next milestone
 
-Agree on production upload/scanning/retention and provider/redaction policies;
-then add private immutable source storage, durable processing jobs, reviewed
-publication/versioning, audit records, and document/page/cell evidence links.
-Webex submission can later call the same normalized SOP processing capability.
+Add durable background generation jobs so long provider requests can continue
+independently of a browser request. Webex submission can later call the same
+normalized SOP processing capability.
 
 ## Review-queue troubleshooting
 
@@ -115,7 +116,7 @@ documents only. CI/CD remains pending organization approval of Cloudflare access
 - Browser checks with synthetic API responses passed for file validation, draft editing/export (including extraction warnings), sidebar and Back/Forward state preservation, provider-error recovery, mobile overflow, dark mode, and Basic-user route denial.
 - The running local Worker returned 401 for unauthenticated SOP requests.
 - Real Gemini calls succeeded for synthetic PDF, DOCX, and XLSX sources. Word and Excel tests verified a code available only in embedded screenshot content was read correctly.
-- No production deployment or database migration was performed. A complete signed-in browser-to-provider run remains a manual local acceptance check.
+- Production generation uses the same authenticated, source-validating pipeline as local development; live provider availability and quota remain operational dependencies.
 
 ## Provider reliability follow-up
 
