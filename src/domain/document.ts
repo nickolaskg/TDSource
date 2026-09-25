@@ -27,7 +27,7 @@ export interface ReviewItem {
   title: string;
   sourceSpace: string;
   teamName: string;
-  reason: "new_capture" | "thread_update" | "change_request" | "processing_failed";
+  reason: "new_capture" | "thread_update" | "change_request";
   requestedBy: string;
   requestedAt: string;
   dueAt?: string;

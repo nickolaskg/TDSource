@@ -1216,7 +1216,7 @@ async function processWebexWebhook(payload: WebexWebhookPayload, env: Env): Prom
   } catch (error) {
     console.error("Webex command processing failed", error instanceof Error ? error.message : "Unknown error");
     if (rootId && actorAuthorized) {
-      try { await postBotReply(env, roomId, rootId, "TDS could not process this thread. No content was published; an administrator can inspect the processing issue."); } catch { /* acknowledgement is best effort */ }
+      try { await postBotReply(env, roomId, rootId, "TDS could not process this thread. No content was published. Try the capture command again later or contact support."); } catch { /* acknowledgement is best effort */ }
     }
   }
 }
@@ -1843,32 +1843,6 @@ async function getReviewQueue(request: Request, env: Env): Promise<Response> {
   }) });
 }
 
-async function getProcessingIssues(request: Request, env: Env): Promise<Response> {
-  const session = await readSession(request, env);
-  if (!session) return json({ code: "UNAUTHENTICATED" }, 401);
-  if (!hasReviewAccess(session.teamRoles)) return json({ code: "FORBIDDEN" }, 403);
-  const documentIds = await authorizedDocumentIds(env, session, "review");
-  if (documentIds.length === 0) return json({ items: [] });
-  const captures = await supabaseRequest<Array<{ id: string; document_id: string; requested_by_user_id: string; safe_error_code: string | null; created_at: string }>>(env,
-    `capture_requests?document_id=${inFilter(documentIds)}&status=eq.processing_failed&select=id,document_id,requested_by_user_id,safe_error_code,created_at&order=created_at.desc`);
-  if (captures.length === 0) return json({ items: [] });
-  const [documents, spaces, users] = await Promise.all([
-    supabaseRequest<Array<{ id: string; source_space_id: string }>>(env, `documents?id=${inFilter([...new Set(captures.map(({ document_id }) => document_id))])}&select=id,source_space_id`),
-    supabaseRequest<Array<{ id: string; display_name: string }>>(env, "source_spaces?select=id,display_name"),
-    supabaseRequest<Array<{ id: string; display_name: string }>>(env, `users?id=${inFilter([...new Set(captures.map(({ requested_by_user_id }) => requested_by_user_id))])}&select=id,display_name`),
-  ]);
-  return json({ items: captures.map((capture) => {
-    const document = documents.find(({ id }) => id === capture.document_id);
-    return {
-      id: capture.id, documentId: capture.document_id, title: "Processing issue", reason: "processing_failed",
-      sourceSpace: spaces.find(({ id }) => id === document?.source_space_id)?.display_name || "Webex space",
-      teamName: session.teamRoles?.[0]?.teamName || "Assigned team",
-      requestedBy: users.find(({ id }) => id === capture.requested_by_user_id)?.display_name || "TDS user",
-      requestedAt: capture.created_at, safeErrorCode: capture.safe_error_code || "PROCESSING_FAILED",
-    };
-  }) });
-}
-
 async function getReviewDetail(request: Request, env: Env, documentId: string): Promise<Response> {
   const session = await readSession(request, env);
   if (!session) return json({ code: "UNAUTHENTICATED" }, 401);
@@ -2363,7 +2337,9 @@ async function handleApi(request: Request, env: Env, waitUntil: (promise: Promis
   if (request.method === "POST" && pathname === "/api/admin/initial-setup") return completeInitialSetup(request, env);
   if (request.method === "GET" && pathname === "/api/admin/team-members") return getTeamMembers(request, env);
   if (request.method === "GET" && pathname === "/api/reviews") return getReviewQueue(request, env);
-  if (request.method === "GET" && pathname === "/api/processing-issues") return getProcessingIssues(request, env);
+  // Retain the legacy route so cached clients do not fail, but never expose
+  // background processing failures in the product UI.
+  if (request.method === "GET" && pathname === "/api/processing-issues") return json({ items: [] });
   if (request.method === "GET" && pathname === "/api/library") return getLibrary(request, env);
   if (request.method === "POST" && pathname === "/api/knowledge-chat") return chatKnowledge(request, env);
   if (request.method === "POST" && pathname === "/api/admin/rag/backfill") return backfillKnowledgeIndexes(request, env);
